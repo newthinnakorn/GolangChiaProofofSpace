@@ -1,0 +1,9 @@
+# github.com/klauspost/cpuid/v2 v2.0.9
+## explicit; go 1.13
+github.com/klauspost/cpuid/v2
+# github.com/tunabay/go-bitarray v1.3.1
+## explicit; go 1.17
+github.com/tunabay/go-bitarray
+# lukechampine.com/blake3 v1.2.1
+## explicit; go 1.17
+lukechampine.com/blake3

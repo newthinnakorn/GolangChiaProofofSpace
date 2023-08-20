@@ -7,11 +7,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/pkg/profile"
 	"github.com/tunabay/go-bitarray"
 	"lukechampine.com/blake3"
 	"math/big"
-	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"runtime"
@@ -502,7 +500,7 @@ func findMatches(matchingShiftsC [][]int, bucketL []T1Entry, bucketR []T1Entry) 
 	}
 	return matches
 }
-func parallelBucketCreation(buckets map[uint32][]T1Entry, data []byte) {
+func parallelBucketInsert(buckets map[uint32][]T1Entry, data []byte) {
 	YXNumByte := cdiv(k + int(kExtraBits) + k)
 	allEntries := len(data) / YXNumByte
 
@@ -511,7 +509,7 @@ func parallelBucketCreation(buckets map[uint32][]T1Entry, data []byte) {
 	if chunkSize > allEntries {
 		chunkSize = allEntries
 	}
-	fmt.Println(maxValue, "Start LoadFile to []PlotEntry")
+	//fmt.Println(maxValue, "Start LoadFile to []PlotEntry")
 	// Create a wait group to synchronize goroutines
 
 	var wg sync.WaitGroup
@@ -564,6 +562,7 @@ func parallelBucketCreation(buckets map[uint32][]T1Entry, data []byte) {
 		}(start, end)
 	}
 	wg.Wait()
+
 }
 func parallelMergeSortBuckets(buckets map[uint32][]T1Entry, numCPU int) {
 	sem := make(chan struct{}, numCPU)
@@ -586,13 +585,14 @@ func loadDataFromFile(filename string, k int) (map[uint32][]T1Entry, error) {
 	startTimeReadFile := time.Now()
 	fmt.Println(filename, "ReadFile ")
 	data, err := os.ReadFile(filename)
+
 	if err != nil {
 		fmt.Println(err)
 	}
 	timeElapsed := time.Since(startTimeReadFile)
 	fmt.Println(filename, "End ReadFile", len(data), "time took ", timeElapsed)
 
-	parallelBucketCreation(buckets, data)
+	parallelBucketInsert(buckets, data)
 
 	fmt.Println(filename, "Start parallelMergeSortBuckets:", len(buckets))
 	startTimeReadFile = time.Now()
@@ -600,11 +600,11 @@ func loadDataFromFile(filename string, k int) (map[uint32][]T1Entry, error) {
 	timeElapsed = time.Since(startTimeReadFile)
 	fmt.Println(filename, "End parallelMergeSortBuckets:", len(buckets), "time took ", timeElapsed)
 
-	startload := time.Now()
-	fmt.Println("Start runtime.GC()")
-	runtime.GC()
-	timeElapsed = time.Since(startload)
-	fmt.Println("END runtime.GC() time took ", timeElapsed)
+	/*	startload := time.Now()
+		fmt.Println("Start runtime.GC()")
+		runtime.GC()
+		timeElapsed = time.Since(startload)
+		fmt.Println("END runtime.GC() time took ", timeElapsed)*/
 	return buckets, nil
 }
 func GoMatching(b uint32, matchingShiftsC [][]int, tableIndex uint8, metadataSize int, k int, leftBucket, rightBucket []T1Entry, wg *sync.WaitGroup, goroutineSem chan struct{}) {
@@ -961,7 +961,7 @@ func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k in
 
 	fmt.Println("Computing table ", table_index+1)
 	var wg sync.WaitGroup
-	numCPU := runtime.NumCPU() - 1
+	numCPU := runtime.NumCPU()
 	entryCount := 0
 
 	FirstLoad := true
@@ -983,6 +983,7 @@ func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k in
 			fileName := fmt.Sprintf("E://output/Bucket_%d.tmp", LoopTmpFile)
 			var err error
 			buckets, err = loadDataFromFile(fileName, k)
+
 			if err != nil {
 				fmt.Println("err loadDataFromFile:", err)
 			}
@@ -999,7 +1000,12 @@ func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k in
 
 			LoopTmpFile++
 			FirstLoad = false
-
+			// Manually trigger garbage collector
+			var m runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&m)
+			fmt.Println("HeapReleased: ", m.HeapReleased)
+			fmt.Println("NumGC: ", m.NumGC)
 			fmt.Println(fileName, "Find Matching... buckets : ", len(buckets))
 			fmt.Println("")
 		}
@@ -1032,10 +1038,10 @@ func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k in
 }
 func f1(ranges []Range, k int, start uint64, end uint64, waitingRoomEntries chan []F1Entry, wg *sync.WaitGroup) {
 	defer wg.Done()
-	F1NumBits := F1NumByte * 8            // แปลง F1NumByte เป็น bits
-	Buffer := (2 * 1000000) / (F1NumByte) //กำหนด buffer MB และหารค่าว่าสามารถใส่ F1 ได้กี่ Entries *Buffer ในที่นี้คือจำนวน index สูงสุดของ bufferPool
-	NumBlock := uint64(50000)             //จำนวน Block ที่ต้องการให้ Chacha8  gen ออกมาใน 1 ครั้ง (1block = 512bits)
-	bufferPool := make([]F1Entry, Buffer) //หลังจาก คำนวณ F1 จะเก็บไว้ในบัพเฟอร์นี้
+	F1NumBits := F1NumByte * 8             // แปลง F1NumByte เป็น bits
+	Buffer := (10 * 1000000) / (F1NumByte) //กำหนด buffer MB และหารค่าว่าสามารถใส่ F1 ได้กี่ Entries *Buffer ในที่นี้คือจำนวน index สูงสุดของ bufferPool
+	NumBlock := uint64(100000)             //จำนวน Block ที่ต้องการให้ Chacha8  gen ออกมาใน 1 ครั้ง (1block = 512bits)
+	bufferPool := make([]F1Entry, Buffer)  //หลังจาก คำนวณ F1 จะเก็บไว้ในบัพเฟอร์นี้
 
 	Clen := 0         //init index เริ่มต้นของบับเฟอร์ เราจะ +1 ทุกครั้งที่มีการเพิ่มบัฟเฟอร์ bufferPool
 	currentX := start // init x ปัจจุบัน
@@ -1133,10 +1139,6 @@ func f1(ranges []Range, k int, start uint64, end uint64, waitingRoomEntries chan
 	}
 }
 func main() {
-	defer profile.Start(profile.MemProfile).Stop()
-	go func() {
-		http.ListenAndServe(":8080", nil)
-	}()
 
 	start := time.Now()
 
@@ -1176,9 +1178,9 @@ func main() {
 	fmt.Println("YXNumByte", YXNumByte, "Bytes")
 
 	OneBucketMemSize := BucketEntrySize * uint64(YXNumByte) //ใน 1 Bucket จะต้องใช้ Memory เท่าไหร่
-	MemorySizeByte := 1000 * 1000000                        //(MB*Byte) ต้องการใช้ Memory ทั้งหมดเท่าไหร่ ใน 1 TmpFile
+	BucketSizeByte := 300 * 1000000                         //(MB*Byte) ต้องการใช้ Memory ทั้งหมดเท่าไหร่ ใน 1 TmpFile
 
-	NumBucketFitInMemory, remain := divmod(uint64(MemorySizeByte), OneBucketMemSize) //จาก MemorySizeByte จะสามารถใส่ได้กี่ Buckets ใน 1 TmpFile
+	NumBucketFitInMemory, remain := divmod(uint64(BucketSizeByte), OneBucketMemSize) //จาก BucketSizeByte จะสามารถใส่ได้กี่ Buckets ใน 1 TmpFile
 	if remain != 0 {
 		NumBucketFitInMemory = NumBucketFitInMemory + 1
 	}
@@ -1188,9 +1190,9 @@ func main() {
 		TmpFileCount = TmpFileCount + 1
 	}
 
-	buffSize := int((100 * 1000000) / TmpFileCount) // กำหนด buffered writer หาร TmpFileCount
+	buffSize := int((50 * 1000000) / TmpFileCount) // กำหนด buffered writer หาร TmpFileCount
 
-	fmt.Println("OneBucketMemSize", OneBucketMemSize, "Byte | MemorySize", MemorySizeByte/1000000, "MB | NumBucketFitInMemory/PerTmpFile:", NumBucketFitInMemory, " | TmpFileCount:", TmpFileCount)
+	fmt.Println("OneBucketMemSize", OneBucketMemSize, "Byte | MemorySize", BucketSizeByte/1000000, "MB | NumBucketFitInMemory/PerTmpFile:", NumBucketFitInMemory, " | TmpFileCount:", TmpFileCount)
 
 	var ranges []Range
 	var fileObjects []*bufio.Writer // Create a list to store file objects bufio.Writer
@@ -1354,7 +1356,7 @@ func main() {
 	fmt.Println("HeapReleased: ", m.HeapReleased)
 	fmt.Println("NumGC: ", m.NumGC)
 	fmt.Println("-----------")
-	time.Sleep(60 * time.Second)
+
 	for t := 1; t < 7; t++ {
 		computTables(maxValue, TmpFileCount, BucketCount, k, uint8(t))
 		/*		startload := time.Now()
@@ -1371,7 +1373,7 @@ func main() {
 				fmt.Println("END runtime.GC() time took ", timeElapsed)
 				time.Sleep(600 * time.Second)*/
 		fmt.Println("")
-		//break //computTables 2 only
+		break //computTables 2 only
 	}
 
 	//Gen Id for Table 7

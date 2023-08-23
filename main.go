@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/tunabay/go-bitarray"
+	"log"
 	"lukechampine.com/blake3"
 	"math/big"
 	_ "net/http/pprof"
@@ -36,6 +37,15 @@ type T1Entry struct {
 	y [((k + kExtraBits) + 8 - 1) / 8]byte
 	x [((k) + 8 - 1) / 8]byte
 }
+type ComputePlotEntry struct {
+	y        []byte
+	x        []byte
+	xlxr     []byte
+	PosL     int
+	PosR     int
+	isSwitch bool
+}
+
 type Plot struct {
 	t1 []PlotEntry
 	t2 []PlotEntry
@@ -59,10 +69,10 @@ var plot Plot
 var kVectorLens = []uint8{0, 0, 1, 2, 4, 4, 3, 2}
 
 const (
-	sigma = "expand 32-byte k"
-	tau   = "expand 16-byte k"
-	k     = 28
-
+	sigma                = "expand 32-byte k"
+	tau                  = "expand 16-byte k"
+	k                    = 22
+	kSize                = k
 	kF1BlockSizeBits int = 512
 
 	// Extra bits of output from the f functions.
@@ -319,13 +329,13 @@ func bitsToByte(bits string) byte {
 	}
 	return b
 }
-func parallelMergeSort(plotEntries []T1Entry, numGoroutines int) {
+func parallelMergeSort(plotEntries []ComputePlotEntry, numGoroutines int) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	mergeSort(plotEntries, numGoroutines, &wg)
 	wg.Wait()
 }
-func mergeSort(plotEntries []T1Entry, numGoroutines int, wg *sync.WaitGroup) {
+func mergeSort(plotEntries []ComputePlotEntry, numGoroutines int, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	n := len(plotEntries)
@@ -350,12 +360,12 @@ func mergeSort(plotEntries []T1Entry, numGoroutines int, wg *sync.WaitGroup) {
 
 	merge(plotEntries)
 }
-func merge(plotEntries []T1Entry) {
+func merge(plotEntries []ComputePlotEntry) {
 	n := len(plotEntries)
 	mid := n / 2
 
 	i, j := 0, mid
-	temp := make([]T1Entry, 0, n)
+	temp := make([]ComputePlotEntry, 0, n)
 	for i < mid && j < n {
 		if lessSlice(plotEntries[i].y[:], plotEntries[j].y[:]) {
 			temp = append(temp, plotEntries[i])
@@ -401,7 +411,7 @@ func calculatePercent(value float64, total float64) float64 {
 	}
 	return (value / total) * 100.0
 }
-func calbucket(left T1Entry, right T1Entry, tableIndex int, metadataSize int, k int) (f, c *bitarray.BitArray) {
+func calbucket(left ComputePlotEntry, right ComputePlotEntry, tableIndex int, metadataSize int, k int) (f, c *bitarray.BitArray) {
 
 	yL := new(big.Int).SetBytes(left.y[:])
 	xL := new(big.Int).SetBytes(left.x[:])
@@ -455,7 +465,7 @@ func calbucket(left T1Entry, right T1Entry, tableIndex int, metadataSize int, k 
 func BucketID(y uint64) uint64 {
 	return y / kBC
 }
-func findMatches(matchingShiftsC [][]int, bucketL []T1Entry, bucketR []T1Entry) [][]int {
+func findMatches(matchingShiftsC [][]int, bucketL []ComputePlotEntry, bucketR []ComputePlotEntry) [][]int {
 	var matches [][]int
 	RBids := [kCInt64][]int64{}
 	RPositions := [kCInt64][]int64{}
@@ -500,7 +510,7 @@ func findMatches(matchingShiftsC [][]int, bucketL []T1Entry, bucketR []T1Entry) 
 	}
 	return matches
 }
-func parallelBucketInsert(buckets map[uint32][]T1Entry, data []byte) {
+func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte) {
 	YXNumByte := cdiv(k + int(kExtraBits) + k)
 	allEntries := len(data) / YXNumByte
 
@@ -526,7 +536,7 @@ func parallelBucketInsert(buckets map[uint32][]T1Entry, data []byte) {
 			defer wg.Done()
 			//fmt.Println("Report| YXNumByte:", YXNumByte, "allEntries:", allEntries, "chunkSize:", chunkSize, "startIndex:", startIndex, "endIndex:", endIndex)
 			startByte := 0
-			localBuckets := make(map[uint32][]T1Entry)
+			localBuckets := make(map[uint32][]ComputePlotEntry)
 			var bucketID uint32
 			var y *bitarray.BitArray
 			var x *bitarray.BitArray
@@ -544,13 +554,13 @@ func parallelBucketInsert(buckets map[uint32][]T1Entry, data []byte) {
 				bucketID = uint32(BucketID(y.ToUint64()))
 
 				if _, ok := localBuckets[bucketID]; !ok {
-					localBuckets[bucketID] = make([]T1Entry, 0, 1) // Adjust the initial capacity as needed
+					localBuckets[bucketID] = make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
 				}
 				yByte, _ = PedingBits(y).Bytes()
 				xByte, _ = PedingBits(x).Bytes()
-				newEntry := T1Entry{
-					y: [((k + kExtraBits) + 8 - 1) / 8]byte(yByte),
-					x: [((k) + 8 - 1) / 8]byte(xByte),
+				newEntry := ComputePlotEntry{
+					y: yByte,
+					x: xByte,
 				}
 				localBuckets[bucketID] = append(localBuckets[bucketID], newEntry)
 			}
@@ -564,14 +574,14 @@ func parallelBucketInsert(buckets map[uint32][]T1Entry, data []byte) {
 	wg.Wait()
 
 }
-func parallelMergeSortBuckets(buckets map[uint32][]T1Entry, numCPU int) {
+func parallelMergeSortBuckets(buckets map[uint32][]ComputePlotEntry, numCPU int) {
 	sem := make(chan struct{}, numCPU)
 	var wg sync.WaitGroup
 	wg.Add(len(buckets))
 
 	for _, entries := range buckets {
 		sem <- struct{}{} // Acquire semaphore
-		go func(entries []T1Entry) {
+		go func(entries []ComputePlotEntry) {
 			defer func() { <-sem }() // Release semaphore
 			defer wg.Done()
 			parallelMergeSort(entries, numCPU)
@@ -580,12 +590,11 @@ func parallelMergeSortBuckets(buckets map[uint32][]T1Entry, numCPU int) {
 
 	wg.Wait()
 }
-func loadDataFromFile(filename string, k int) (map[uint32][]T1Entry, error) {
-	buckets := make(map[uint32][]T1Entry)
+func loadDataFromFile(filename string, k int) (map[uint32][]ComputePlotEntry, error) {
+	buckets := make(map[uint32][]ComputePlotEntry)
 	startTimeReadFile := time.Now()
 	fmt.Println(filename, "ReadFile ")
 	data, err := os.ReadFile(filename)
-
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -599,28 +608,114 @@ func loadDataFromFile(filename string, k int) (map[uint32][]T1Entry, error) {
 	parallelMergeSortBuckets(buckets, runtime.NumCPU())
 	timeElapsed = time.Since(startTimeReadFile)
 	fmt.Println(filename, "End parallelMergeSortBuckets:", len(buckets), "time took ", timeElapsed)
-
-	/*	startload := time.Now()
-		fmt.Println("Start runtime.GC()")
-		runtime.GC()
-		timeElapsed = time.Since(startload)
-		fmt.Println("END runtime.GC() time took ", timeElapsed)*/
+	runtime.GC()
 	return buckets, nil
 }
-func GoMatching(b uint32, matchingShiftsC [][]int, tableIndex uint8, metadataSize int, k int, leftBucket, rightBucket []T1Entry, wg *sync.WaitGroup, goroutineSem chan struct{}) {
+func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint8, metadataSize int, leftBucket, rightBucket []ComputePlotEntry, wg1 *sync.WaitGroup, goroutineSem chan struct{}, matchResult chan map[int]FxMatched) {
 	//start := time.Now()
-	defer wg.Done()
+	defer wg1.Done()
 	m := 0
 
-	for _, match := range findMatches(matchingShiftsC, leftBucket, rightBucket) {
-		_, _ = calbucket(leftBucket[match[0]], rightBucket[match[1]], int(tableIndex+1), metadataSize, k)
+	Matches := findMatches(matchingShiftsC, leftBucket, rightBucket)
+	NewEntries := make([]ComputePlotEntry, 0)
+	for _, match := range Matches {
+
+		f, c := calbucket(leftBucket[match[0]], rightBucket[match[1]], int(tableIndex+1), metadataSize, k)
+		Fx, _ := PedingBits(f).Bytes()
+		C, _ := PedingBits(c).Bytes()
+
+		var bitsXL *bitarray.BitArray
+		var bitsXR *bitarray.BitArray
+		var LXL []*bitarray.BitArray
+		var RXL []*bitarray.BitArray
+		var newxlxr *bitarray.BitArray
+		var isSwitch bool
+		if tableIndex+1 == 2 {
+			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].x[:]), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
+		} else {
+			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].x[:]), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
+			if bitsXL.Equal(bitsXR) {
+
+				/*				LXL = GetInputs(new(big.Int).SetBytes(left.id).Uint64(), table_index, k)
+								RXL = GetInputs(new(big.Int).SetBytes(right.id).Uint64(), table_index, k)
+								bitsXL = bitarray.MustParse("")
+								bitsXR = bitarray.MustParse("")
+								for _, value := range LXL {
+									bitsXL = bitsXL.Append(value)
+								}
+								for _, value := range RXL {
+									bitsXR = bitsXR.Append(value)
+								}*/
+			}
+		}
+		Compare := CompareProofBits(bitsXL, bitsXR, uint8(k))
+		if Compare == 1 { //switch
+			if bitsXL.Len() > k {
+				newxlxr = LXL[len(LXL)-1] //ดึงชุดสุดท้ายมา
+			} else {
+				newxlxr = bitsXL
+			}
+			isSwitch = true
+		} else if Compare == 0 { //switch
+			if bitsXL.Len() > k {
+				newxlxr = LXL[len(LXL)-1]
+			} else {
+				newxlxr = bitsXL
+			}
+			isSwitch = true
+		} else if Compare == -1 {
+			if bitsXR.Len() > k {
+				newxlxr = RXL[len(RXL)-1]
+			} else {
+				newxlxr = bitsXR
+			}
+			isSwitch = false
+		}
+
+		Bytesxlxr, _ := PedingBits(newxlxr).Bytes()
+
+		if tableIndex+1 == 7 {
+			f7, _ := PedingBits(f.Slice(0, k)).Bytes()
+			newEntry := ComputePlotEntry{
+				y:        f7,
+				PosL:     0,
+				PosR:     0,
+				isSwitch: isSwitch,
+			}
+			NewEntries = append(NewEntries, newEntry)
+		} else {
+			newEntry := ComputePlotEntry{
+				y:        Fx,
+				x:        C,
+				xlxr:     Bytesxlxr,
+				PosL:     0,
+				PosR:     0,
+				isSwitch: isSwitch,
+			}
+			NewEntries = append(NewEntries, newEntry)
+		}
 		m++
 	}
-	//timeElapsed := time.Since(start)
-	//fmt.Printf("%d %d %d %d | time took %s \n", b, len(leftBucket), len(rightBucket), m, timeElapsed)
 
+	res := make(map[int]FxMatched)
+	res[int(b)] = FxMatched{
+		MatchPos: Matches,
+		BucketL:  leftBucket,
+		Output:   NewEntries,
+	}
+	//timeElapsed := time.Since(start)
+	//fmt.Printf("%d %d %d %d \n", b, len(leftBucket), len(rightBucket), m)
+	matchResult <- res
 	<-goroutineSem
 }
+
+type FxFandC struct {
+	F *bitarray.BitArray
+	C *bitarray.BitArray
+}
+
 func FindIndexID(Entries []PlotEntry, value uint64) uint64 {
 	reuseBigID := new(big.Int)
 	for i, v := range Entries {
@@ -828,7 +923,6 @@ func ProofToPlot(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 				newProof = newProof.Append(newLR) //no switch
 				//fmt.Println(tableIndex, size, j, j+1, "(", j*size, (j+1)*size, ")", "(", (j+1)*size, (j+2)*size, ")", L, R, "False", newLR)
 			}
-
 		}
 		proof = newProof
 	}
@@ -943,15 +1037,14 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 }
 */
 
-func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k int, table_index uint8) {
+func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMemory, TmpFileCount uint64) {
 	start := time.Now()
 	metadataSize := int(kVectorLens[table_index+1]) * k //0, 0, 1, 2, 4, 4, 3, 2
 	// Precomputation necessary to compute matches
 	matchingShiftsC := make([][]int, 2)
 	for i := 0; i < 2; i++ {
-		matchingShiftsC[i] = make([]int, kCInt64)
+		matchingShiftsC[i] = make([]int, kExtraBitsPow)
 	}
-
 	for parity := 0; parity < 2; parity++ {
 		for r := int64(0); r < kExtraBitsPow; r++ {
 			v := ((2*r + int64(parity)) * (2*r + int64(parity))) % kCInt64
@@ -967,75 +1060,333 @@ func computTables(maxValue uint64, TmpFileCount uint64, BucketCount uint64, k in
 	FirstLoad := true
 	NeedLoad := false
 	LoopTmpFile := uint64(0)
-	bucketsContinue := make([]T1Entry, 0, 1) // Adjust the initial capacity as needed
-	goroutineSem := make(chan struct{}, numCPU)
-	buckets := make(map[uint32][]T1Entry)
+	bucketsContinue := make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
 
-	for b := uint32(0); b < uint32(BucketCount); b++ {
-		if NeedLoad == true || FirstLoad == true {
-			startload := time.Now()
-			if LoopTmpFile == TmpFileCount {
-				entryCount = entryCount + len(bucketsContinue)
-				fmt.Println("Break LoopTmpFile > TmpFileCount")
-				break
+	buckets := make(map[uint32][]ComputePlotEntry)
+	var err error
+	wg.Add(1)
+	matchResult := make(chan map[int]FxMatched, numCPU*2)
+	go func(wg *sync.WaitGroup) {
+		defer wg.Done()
+		var wg1 sync.WaitGroup
+		goroutineSem := make(chan struct{}, numCPU)
+		for b := uint32(0); b < uint32(BucketCount-1); b++ { //BucketCount-1 เพรา bucket เป็นคู่สุดท้าย เช่น มี4 bucket = 1-2,2-3,3-4
+			if NeedLoad == true || FirstLoad == true {
+				startload := time.Now()
+				fileName := fmt.Sprintf("E://output/Bucket_%d.tmp", LoopTmpFile)
+				buckets = make(map[uint32][]ComputePlotEntry)
+				buckets, err = loadDataFromFile(fileName, k)
+				if err != nil {
+					fmt.Println("err loadDataFromFile:", err)
+				}
+
+				if NeedLoad == true {
+					buckets[b] = bucketsContinue
+					bucketsContinue = make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
+					fmt.Println(fileName, "buckets NeedLoad at:", b+1, len(buckets[b]))
+					NeedLoad = false
+				}
+
+				timeElapsed := time.Since(startload)
+				fmt.Println(fileName, "LoadData time took ", timeElapsed)
+
+				LoopTmpFile++
+				FirstLoad = false
+				e := os.Remove(fileName)
+				if e != nil {
+					log.Fatal(e)
+				}
+				fmt.Println(fileName, "Find Matching... buckets : ", len(buckets))
+				fmt.Println("")
+
+			}
+			if len(buckets[b+1]) == 0 {
+				fmt.Println("R buckets Continue at:", b+1, len(bucketsContinue))
+				bucketsContinue = buckets[b]
+				fmt.Println("create bucketsContinue:", b)
+				b--
+				fmt.Println("Backward loop 1 step to :", b)
+				NeedLoad = true
+				fmt.Println("Set NeedLoad :", NeedLoad)
+				continue
 			}
 
-			fileName := fmt.Sprintf("E://output/Bucket_%d.tmp", LoopTmpFile)
-			var err error
-			buckets, err = loadDataFromFile(fileName, k)
-
-			if err != nil {
-				fmt.Println("err loadDataFromFile:", err)
-			}
-
-			if NeedLoad == true {
-				buckets[b] = bucketsContinue
-				bucketsContinue = make([]T1Entry, 0, 1) // Adjust the initial capacity as needed
-				fmt.Println(fileName, "buckets NeedLoad at:", b+1, len(buckets[b]))
-				NeedLoad = false
-			}
-
-			timeElapsed := time.Since(startload)
-			fmt.Println(fileName, "LoadData time took ", timeElapsed)
-
-			LoopTmpFile++
-			FirstLoad = false
-			// Manually trigger garbage collector
-			var m runtime.MemStats
-			runtime.GC()
-			runtime.ReadMemStats(&m)
-			fmt.Println("HeapReleased: ", m.HeapReleased)
-			fmt.Println("NumGC: ", m.NumGC)
-			fmt.Println(fileName, "Find Matching... buckets : ", len(buckets))
-			fmt.Println("")
+			entryCount += len(buckets[b])
+			wg1.Add(1)
+			goroutineSem <- struct{}{}
+			go GoMatchingAndCalculateFx(b, matchingShiftsC, table_index, metadataSize, buckets[b], buckets[b+1], &wg1, goroutineSem, matchResult)
 		}
+		wg1.Wait()
+	}(&wg)
 
-		if len(buckets[b+1]) == 0 {
-			bucketsContinue = buckets[b]
-			buckets = make(map[uint32][]T1Entry)
-			fmt.Println("R buckets Continue at:", b+1, len(bucketsContinue))
-			fmt.Println("create bucketsContinue:", b)
-			NeedLoad = true
-			b--
-			fmt.Println("Backward 1 step to :", b)
-			continue
-		}
+	current := 0
 
-		if len(buckets[b]) > 0 && len(buckets[b+1]) > 0 {
-			entryCount = entryCount + len(buckets[b])
-		}
+	currentTableTempSlot := make(map[int]FxMatched)
 
-		//fmt.Println(b, b+1, BucketCount)
-		wg.Add(1)
-		goroutineSem <- struct{}{}
-		go GoMatching(b, matchingShiftsC, table_index, metadataSize, k, buckets[b], buckets[b+1], &wg, goroutineSem)
+	CurrentHashmap := make(map[int]uint64) //old pos,new pos
+	NexttHashmap := make(map[int]uint64)   //old pos,new pos
+
+	HashmapCount := 0
+
+	OutputPlotEntryL := make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
+	OutputPlotEntryR := make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
+
+	CurrentSlot := FxMatched{}
+	NexttSlot := FxMatched{}
+
+	fileName := fmt.Sprintf("E://output/Table%d.tmp", table_index)
+	file, fileErr := os.Create(fileName)
+	if fileErr != nil {
+		fmt.Println("Error creating file:", fileErr)
+		return
 	}
+	buffSize := 5 * 1000000                            // กำหนด buffered writer
+	WriteBuffer := bufio.NewWriterSize(file, buffSize) // Create a buffered writer with a larger buffer size
 
+	var objfileObjects []*bufio.Writer // Create a list to store file objects bufio.Writer
+	var objfiles []*os.File            // Create a list to store file objects os.File
+	var ranges []Range
+	for i := uint64(0); i < TmpFileCount; i++ {
+		if i == TmpFileCount-1 { //last End = BucketCount
+			CreateRange := Range{
+				Start: i * NumBucketFitInMemory,
+				End:   BucketCount,
+			}
+
+			ranges = append(ranges, CreateRange)
+
+			objfileName := fmt.Sprintf("E://output/Bucket_%d_table_%d.tmp", i, table_index+1)
+			objfile, objfileErr := os.Create(objfileName)
+			if objfileErr != nil {
+				fmt.Println("Error creating file:", objfileErr)
+				return
+			}
+
+			RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
+
+			objfiles = append(objfiles, objfile)
+			objfileObjects = append(objfileObjects, RangeBuff)
+		} else {
+			CreateRange := Range{
+				Start: i * NumBucketFitInMemory,
+				End:   ((i + 1) * NumBucketFitInMemory) - 1,
+			}
+
+			ranges = append(ranges, CreateRange)
+
+			objfileName := fmt.Sprintf("E://output/Bucket_%d_table_%d.tmp", i, table_index+1)
+			objfile, objfileErr := os.Create(objfileName)
+			if objfileErr != nil {
+				fmt.Println("Error creating file:", objfileErr)
+				return
+			}
+			RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
+			objfiles = append(objfiles, objfile)
+			objfileObjects = append(objfileObjects, RangeBuff)
+		}
+	}
+	for {
+		if len(CurrentSlot.MatchPos) == 0 { //use only init CurrentSlot
+			for {
+				_, ok := currentTableTempSlot[current] // current = 0 init
+				if ok {
+					CurrentSlot = currentTableTempSlot[current]
+					delete(currentTableTempSlot, current)
+
+					for _, pos := range CurrentSlot.MatchPos {
+						_, ok = CurrentHashmap[pos[0]]
+						if !ok {
+							CurrentHashmap[pos[0]] = uint64(HashmapCount) //โยน pos เข้าไปที่ hashmap พร้อม value ของ new pos
+							HashmapCount++
+
+						}
+					}
+					break
+				} else {
+					data := <-matchResult
+					for key, value := range data {
+						currentTableTempSlot[key] = value
+					}
+				}
+			}
+		}
+
+		if len(NexttSlot.MatchPos) == 0 {
+			for {
+				_, ok := currentTableTempSlot[current+1] // current = 0 init
+				if ok {
+					NexttSlot = currentTableTempSlot[current+1]
+					break
+				} else {
+					data := <-matchResult
+					for key, value := range data {
+						currentTableTempSlot[key] = value
+					}
+				}
+			}
+		}
+
+		OutputPlotEntryR = CurrentSlot.Output //create new NextOut from CurrentSlot
+
+		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
+			OutputPlotEntryR[i].PosL = int(CurrentHashmap[v[0]]) // ถูกแล้ว //add new PosL to NextOut
+		}
+
+		//Select used Entry and append to CurrentOut, aka create new CurrentOut from CurrentHashmap
+		for key, _ := range CurrentHashmap {
+			SelectedEntry := CurrentSlot.BucketL[key] // ถูกแล้ว
+			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
+		}
+
+		//create NexttHashmap
+		for _, pos := range CurrentSlot.MatchPos {
+			_, ok := NexttHashmap[pos[1]]
+			if !ok {
+				NexttHashmap[pos[1]] = uint64(HashmapCount) //โยน pos เข้าไปที่ hashmap พร้อม value ของ new pos
+				HashmapCount++
+			}
+		}
+
+		for _, pos := range NexttSlot.MatchPos {
+			_, ok := NexttHashmap[pos[0]]
+			if !ok {
+				NexttHashmap[pos[0]] = uint64(HashmapCount) //โยน pos เข้าไปที่ hashmap พร้อม value ของ new pos
+				HashmapCount++
+			}
+		}
+
+		//Select used Entry from NexttHashmap and append to CurrentOut
+		for key, _ := range NexttHashmap {
+			SelectedEntry := NexttSlot.BucketL[key] // ถูกแล้ว หรือสามารถใช้ NexttSlot.BucketL ก็ได้
+			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
+		}
+
+		//parallelMergeSort(OutputPlotEntryL, 4)
+
+		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
+			OutputPlotEntryR[i].PosR = int(NexttHashmap[v[1]]) //add new PosR to NextOut
+		}
+		for i, v := range OutputPlotEntryR { // ถูกแล้ว
+			if v.isSwitch == true {
+				PosL := v.PosL
+				PosR := v.PosR
+				OutputPlotEntryR[i].PosR = PosL
+				OutputPlotEntryR[i].PosR = PosR
+			}
+		}
+
+		current++
+		CurrentSlot = NexttSlot
+		NexttSlot = FxMatched{}
+		CurrentHashmap = NexttHashmap
+		NexttHashmap = make(map[int]uint64)
+
+		//นำไปใช้งาน
+		for i := 0; i < len(OutputPlotEntryL); i++ {
+			var dataWrite []byte
+			if table_index == 1 {
+				dataWrite = OutputPlotEntryL[i].x[:]
+				_, err = WriteBuffer.Write(dataWrite) //write only X
+				if err != nil {
+					fmt.Println("Error writing to file:", err)
+					return
+				}
+			} else if table_index == 7 {
+				dataWrite = append(dataWrite, OutputPlotEntryL[i].y[:]...)
+				PosLByte := make([]byte, 4)
+				PosRByte := make([]byte, 4)
+				binary.LittleEndian.PutUint32(PosLByte, uint32(OutputPlotEntryL[i].PosL))
+				binary.LittleEndian.PutUint32(PosRByte, uint32(OutputPlotEntryL[i].PosR))
+				dataWrite = append(dataWrite, PosLByte...)
+				dataWrite = append(dataWrite, PosRByte...)
+				_, err = WriteBuffer.Write(dataWrite)
+				if err != nil {
+					fmt.Println("Error writing to file:", err)
+					return
+				}
+			} else {
+				PosLByte := make([]byte, 4)
+				PosRByte := make([]byte, 4)
+				binary.LittleEndian.PutUint32(PosLByte, uint32(OutputPlotEntryL[i].PosL))
+				binary.LittleEndian.PutUint32(PosRByte, uint32(OutputPlotEntryL[i].PosR))
+				dataWrite = append(dataWrite, PosLByte...)
+				dataWrite = append(dataWrite, PosRByte...)
+				_, err = WriteBuffer.Write(dataWrite)
+				if err != nil {
+					fmt.Println("Error writing to file:", err)
+					return
+				}
+			}
+
+			if WriteBuffer.Buffered() >= buffSize {
+				err = WriteBuffer.Flush()
+				if err != nil {
+					return
+				}
+			}
+		}
+
+		for i := 0; i < len(OutputPlotEntryR); i++ {
+			var BucketIndex int
+			var dataWrite []byte
+			XBits := bitarray.NewFromBytes(OutputPlotEntryR[i].y, 0, len(OutputPlotEntryR[i].y)*8)
+			BitsXPadToKBits := XBits.Slice(0, XBits.Len()) //silce bits 0:6(kExtraBits)
+			bucketid := BucketID(BitsXPadToKBits.ToUint64())
+
+			y := OutputPlotEntryR[i].y
+			x := OutputPlotEntryR[i].x
+			xlxr := OutputPlotEntryR[i].xlxr
+			PosLByte := make([]byte, 4)
+			PosRByte := make([]byte, 4)
+			binary.LittleEndian.PutUint32(PosLByte, uint32(OutputPlotEntryL[i].PosL))
+			binary.LittleEndian.PutUint32(PosRByte, uint32(OutputPlotEntryL[i].PosR))
+			dataWrite = append(dataWrite, y...)
+			dataWrite = append(dataWrite, x...)
+			dataWrite = append(dataWrite, xlxr...)
+			dataWrite = append(dataWrite, PosLByte...)
+			dataWrite = append(dataWrite, PosRByte...)
+
+			for index, rg := range ranges {
+				if bucketid >= rg.Start && bucketid <= rg.End {
+					BucketIndex = index
+					break
+				}
+			}
+
+			_, err = objfileObjects[BucketIndex].Write(dataWrite)
+			if err != nil {
+				fmt.Println("Error writing to file:", err)
+				return
+			}
+
+		}
+
+		OutputPlotEntryR = make([]ComputePlotEntry, 0, 1)
+		OutputPlotEntryL = make([]ComputePlotEntry, 0, 1)
+
+		if current%100 == 0 {
+			runtime.GC()
+		}
+		if uint64(current) == (BucketCount - 2) {
+			break
+		}
+	}
+	err = file.Close()
+	if err != nil {
+		return
+	}
+	//fmt.Println(TempSlot)
 	wg.Wait()
-	fmt.Println("End:", entryCount, maxValue)
 	timeElapsed := time.Since(start)
 	fmt.Printf("computTables time took %s \n", timeElapsed)
 }
+
+type FxMatched struct {
+	MatchPos [][]int
+	BucketL  []ComputePlotEntry
+	Output   []ComputePlotEntry
+}
+
 func f1(ranges []Range, k int, start uint64, end uint64, waitingRoomEntries chan []F1Entry, wg *sync.WaitGroup) {
 	defer wg.Done()
 	F1NumBits := F1NumByte * 8             // แปลง F1NumByte เป็น bits
@@ -1155,7 +1506,7 @@ func main() {
 
 	numCPU := runtime.NumCPU()
 	chunksPerCore, remainingChunks := divmod(maxValue, uint64(numCPU))
-
+	fmt.Println("K Size:", k)
 	fmt.Println("maxValue:", maxValue, " chunksPerCore:", chunksPerCore, " remainingChunks:", remainingChunks)
 
 	//คำนวณจำนวน Bucket สูงสุด ที่ต้องใช้ โดยประมาณจากสูตรการคํานวณ (1<<(k+kExtraBits) / kBC)+1
@@ -1175,10 +1526,14 @@ func main() {
 	fmt.Println("BucketCount:", BucketCount, "Bucket Entry Size:", BucketEntrySize)
 
 	YXNumByte := cdiv(k + int(kExtraBits) + k) //คำนวณจำนวณ Byte ที่ต้องใช้เก็บผลลัพธ์ของ 1 Entry YX ในฟังก์ชั่น F1
-	fmt.Println("YXNumByte", YXNumByte, "Bytes")
+	fmt.Println("YXNumByte", YXNumByte, "Bytes.")
+
+	F1TableSize := maxValue * uint64(YXNumByte)
+	fmt.Println("YXNumByte :", YXNumByte, "Bytes.")
+	fmt.Println("F1TableSize :", F1TableSize/1000000, "MB.")
 
 	OneBucketMemSize := BucketEntrySize * uint64(YXNumByte) //ใน 1 Bucket จะต้องใช้ Memory เท่าไหร่
-	BucketSizeByte := 300 * 1000000                         //(MB*Byte) ต้องการใช้ Memory ทั้งหมดเท่าไหร่ ใน 1 TmpFile
+	BucketSizeByte := 10 * 1000000                          //(MB*Byte) ต้องการใช้ Memory ทั้งหมดเท่าไหร่ ใน 1 TmpFile
 
 	NumBucketFitInMemory, remain := divmod(uint64(BucketSizeByte), OneBucketMemSize) //จาก BucketSizeByte จะสามารถใส่ได้กี่ Buckets ใน 1 TmpFile
 	if remain != 0 {
@@ -1194,10 +1549,9 @@ func main() {
 
 	fmt.Println("OneBucketMemSize", OneBucketMemSize, "Byte | MemorySize", BucketSizeByte/1000000, "MB | NumBucketFitInMemory/PerTmpFile:", NumBucketFitInMemory, " | TmpFileCount:", TmpFileCount)
 
-	var ranges []Range
 	var fileObjects []*bufio.Writer // Create a list to store file objects bufio.Writer
 	var files []*os.File            // Create a list to store file objects os.File
-
+	var ranges []Range
 	for i := uint64(0); i < TmpFileCount; i++ {
 		if i == TmpFileCount-1 { //last End = BucketCount
 			CreateRange := Range{
@@ -1285,7 +1639,7 @@ func main() {
 	fmt.Println("[EntriesCount and MaxValue] =", EntriesCount)
 	fmt.Println("")
 
-	lastPrintedPercent := 0 // Initialize with a value outside the valid range
+	lastPrintedPercent := -1 // Initialize with a value outside the valid range
 	count := uint64(0)
 	for {
 		select {
@@ -1309,10 +1663,10 @@ func main() {
 
 			percent := calculatePercent(float64(count), float64(maxValue))
 			intPercent := int(percent)
-			remainder := intPercent % 1
-			if remainder == 0 && intPercent != lastPrintedPercent {
+			levelPercent := intPercent / 10
+			if levelPercent != lastPrintedPercent {
 				fmt.Printf("%d %d %d%% %d\n", count, maxValue, intPercent, len(waitingRoomEntries))
-				lastPrintedPercent = intPercent
+				lastPrintedPercent = levelPercent
 			}
 		}
 		if count == maxValue {
@@ -1333,7 +1687,6 @@ func main() {
 	}
 
 	fmt.Println("")
-	fmt.Println("")
 
 	wg.Wait()
 	close(waitingRoomEntries)
@@ -1349,31 +1702,22 @@ func main() {
 
 	// Manually trigger garbage collector
 	var m runtime.MemStats
+	startload := time.Now()
+	fmt.Println("Start runtime.GC()")
 	runtime.GC()
 	runtime.ReadMemStats(&m)
 	fmt.Println("HeapAlloc: ", m.HeapAlloc)
 	fmt.Println("HeapIdle: ", m.HeapIdle)
 	fmt.Println("HeapReleased: ", m.HeapReleased)
 	fmt.Println("NumGC: ", m.NumGC)
-	fmt.Println("-----------")
+	timeElapsed = time.Since(startload)
+	fmt.Println("END runtime.GC() time took ", timeElapsed)
+	fmt.Println("")
 
+	//computTables
 	for t := 1; t < 7; t++ {
-		computTables(maxValue, TmpFileCount, BucketCount, k, uint8(t))
-		/*		startload := time.Now()
-				fmt.Println("Start runtime.GC()")
-				// Manually trigger garbage collector
-				runtime.GC()
-				var m runtime.MemStats
-				runtime.ReadMemStats(&m)
-				fmt.Println("HeapAlloc: ", m.HeapAlloc)
-				fmt.Println("HeapIdle: ", m.HeapIdle)
-				fmt.Println("HeapReleased: ", m.HeapReleased)
-				fmt.Println("NumGC: ", m.NumGC)
-				timeElapsed = time.Since(startload)
-				fmt.Println("END runtime.GC() time took ", timeElapsed)
-				time.Sleep(600 * time.Second)*/
-		fmt.Println("")
-		break //computTables 2 only
+		computTables(BucketCount, k, uint8(t), NumBucketFitInMemory, TmpFileCount)
+		break
 	}
 
 	//Gen Id for Table 7

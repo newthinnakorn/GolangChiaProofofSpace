@@ -724,8 +724,8 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
 			if bitsXL.Equal(bitsXR) {
 
-				/*				LXL = GetInputs(new(big.Int).SetBytes(left.id).Uint64(), table_index, k)
-								RXL = GetInputs(new(big.Int).SetBytes(right.id).Uint64(), table_index, k)
+				/*				LXL = GetInputs(new(big.Int).SetBytes().Uint64(), tableIndex, k)
+								RXL = GetInputs(new(big.Int).SetBytes().Uint64(), tableIndex, k)
 								bitsXL = bitarray.MustParse("")
 								bitsXR = bitarray.MustParse("")
 								for _, value := range LXL {
@@ -957,40 +957,37 @@ func BitarrayTobyte(EntryBitarray *bitarray.BitArray) []byte {
 	res, _ := PedingBits(EntryBitarray).Bytes()
 	return res
 }
+
+/*
 func GetInputs(id uint64, table_index uint8, k int) []*bitarray.BitArray {
 
-	tables := []*[]PlotEntry{nil, &plot.t1, &plot.t2, &plot.t3, &plot.t4, &plot.t5, &plot.t6, &plot.t7}
-	if table_index >= uint8(len(tables)) {
-		// Handle the case when the table index is out of range
-		return nil
+		entry := (*tables[table_index])[FindIndexID(*tables[table_index], id)]
+		positionx1 := binary.BigEndian.Uint64(padByteLeft(entry.lid, 8))
+		positionx2 := binary.BigEndian.Uint64(padByteLeft(entry.rid, 8))
+
+		var ret []*bitarray.BitArray
+		if table_index == 2 {
+			L_Entry := (*tables[1])[FindIndexID(*tables[1], positionx1)]
+			R_Entry := (*tables[1])[FindIndexID(*tables[1], positionx2)]
+
+			ret = make([]*bitarray.BitArray, 2)
+			ret[0] = PedingBitsWithlen(bitarray.NewBufferFromByteSlice(L_Entry.metadata).BitArray(), k)
+			ret[1] = PedingBitsWithlen(bitarray.NewBufferFromByteSlice(R_Entry.metadata).BitArray(), k)
+
+		} else {
+			left := GetInputs(positionx1, table_index-1, k)
+			right := GetInputs(positionx2, table_index-1, k)
+
+			ret = make([]*bitarray.BitArray, len(left)+len(right))
+			copy(ret, left)
+			copy(ret[len(left):], right)
+		}
+
+		// Memoize the result
+
+		return ret
 	}
-
-	entry := (*tables[table_index])[FindIndexID(*tables[table_index], id)]
-	positionx1 := binary.BigEndian.Uint64(padByteLeft(entry.lid, 8))
-	positionx2 := binary.BigEndian.Uint64(padByteLeft(entry.rid, 8))
-
-	var ret []*bitarray.BitArray
-	if table_index == 2 {
-		L_Entry := (*tables[1])[FindIndexID(*tables[1], positionx1)]
-		R_Entry := (*tables[1])[FindIndexID(*tables[1], positionx2)]
-
-		ret = make([]*bitarray.BitArray, 2)
-		ret[0] = PedingBitsWithlen(bitarray.NewBufferFromByteSlice(L_Entry.metadata).BitArray(), k)
-		ret[1] = PedingBitsWithlen(bitarray.NewBufferFromByteSlice(R_Entry.metadata).BitArray(), k)
-
-	} else {
-		left := GetInputs(positionx1, table_index-1, k)
-		right := GetInputs(positionx2, table_index-1, k)
-
-		ret = make([]*bitarray.BitArray, len(left)+len(right))
-		copy(ret, left)
-		copy(ret[len(left):], right)
-	}
-
-	// Memoize the result
-
-	return ret
-}
+*/
 func ProofToPlot(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 	var L *bitarray.BitArray
 	var R *bitarray.BitArray
@@ -1233,46 +1230,47 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 	var objfileObjects []*bufio.Writer // Create a list to store file objects bufio.Writer
 	var objfiles []*os.File            // Create a list to store file objects os.File
 	var ranges []Range
-	for i := uint64(0); i < TmpFileCount; i++ {
-		if i == TmpFileCount-1 { //last End = BucketCount
-			CreateRange := Range{
-				Start: i * NumBucketFitInMemory,
-				End:   BucketCount,
+	if table_index+1 != 7 {
+		for i := uint64(0); i < TmpFileCount; i++ {
+			if i == TmpFileCount-1 { //last End = BucketCount
+				CreateRange := Range{
+					Start: i * NumBucketFitInMemory,
+					End:   BucketCount,
+				}
+
+				ranges = append(ranges, CreateRange)
+
+				objfileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index+1, i)
+				objfile, objfileErr := os.Create(objfileName)
+				if objfileErr != nil {
+					fmt.Println("Error creating file:", objfileErr)
+					return
+				}
+
+				RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
+
+				objfiles = append(objfiles, objfile)
+				objfileObjects = append(objfileObjects, RangeBuff)
+			} else {
+				CreateRange := Range{
+					Start: i * NumBucketFitInMemory,
+					End:   ((i + 1) * NumBucketFitInMemory) - 1,
+				}
+
+				ranges = append(ranges, CreateRange)
+
+				objfileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index+1, i)
+				objfile, objfileErr := os.Create(objfileName)
+				if objfileErr != nil {
+					fmt.Println("Error creating file:", objfileErr)
+					return
+				}
+				RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
+				objfiles = append(objfiles, objfile)
+				objfileObjects = append(objfileObjects, RangeBuff)
 			}
-
-			ranges = append(ranges, CreateRange)
-
-			objfileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index+1, i)
-			objfile, objfileErr := os.Create(objfileName)
-			if objfileErr != nil {
-				fmt.Println("Error creating file:", objfileErr)
-				return
-			}
-
-			RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
-
-			objfiles = append(objfiles, objfile)
-			objfileObjects = append(objfileObjects, RangeBuff)
-		} else {
-			CreateRange := Range{
-				Start: i * NumBucketFitInMemory,
-				End:   ((i + 1) * NumBucketFitInMemory) - 1,
-			}
-
-			ranges = append(ranges, CreateRange)
-
-			objfileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index+1, i)
-			objfile, objfileErr := os.Create(objfileName)
-			if objfileErr != nil {
-				fmt.Println("Error creating file:", objfileErr)
-				return
-			}
-			RangeBuff := bufio.NewWriterSize(objfile, buffSize) // Create a buffered writer with a larger buffer size
-			objfiles = append(objfiles, objfile)
-			objfileObjects = append(objfileObjects, RangeBuff)
 		}
 	}
-
 	F7fileName := fmt.Sprintf("E://output/Table%d.tmp", table_index+1)
 	F7file, F7fileErr := os.Create(F7fileName)
 	if F7fileErr != nil {
@@ -1411,7 +1409,6 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 		}
 
 		if table_index+1 == 7 {
-			fmt.Println("Last Table ", table_index+1)
 			for i := 0; i < len(OutputPlotEntryR); i++ {
 				var dataWrite []byte
 				y := OutputPlotEntryR[i].y
@@ -1478,14 +1475,16 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 		}
 	}
 
-	for i, object := range objfileObjects { // Check if the buffer needs flushing
-		err = object.Flush()
-		if err != nil {
-			fmt.Println(err)
-		}
-		err = objfiles[i].Close()
-		if err != nil {
-			fmt.Println(err)
+	if table_index+1 != 7 {
+		for i, object := range objfileObjects { // Check if the buffer needs flushing
+			err = object.Flush()
+			if err != nil {
+				fmt.Println(err)
+			}
+			err = objfiles[i].Close()
+			if err != nil {
+				fmt.Println(err)
+			}
 		}
 	}
 

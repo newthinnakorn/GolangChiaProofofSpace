@@ -832,6 +832,7 @@ func CompareProofBits(left, right *bitarray.BitArray, k uint8) int {
 		rightVal := right.Slice(int(k)*i, int(k)*(i+1))
 		L, _ := PedingBits(leftVal).Bytes()
 		R, _ := PedingBits(rightVal).Bytes()
+
 		LB := new(big.Int).SetBytes(L)
 		RB := new(big.Int).SetBytes(R)
 

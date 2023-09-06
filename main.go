@@ -697,7 +697,7 @@ func loadDataFromFile(filename string, table_index uint8, metadataSize int) (map
 	parallelMergeSortBuckets(buckets, runtime.NumCPU())
 	timeElapsed = time.Since(startTimeReadFile)
 	fmt.Println(filename, "End parallelMergeSortBuckets:", len(buckets), "time took ", timeElapsed)
-	runtime.GC()
+	//runtime.GC()
 	return buckets, nil
 }
 func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint8, metadataSize int, leftBucket, rightBucket []ComputePlotEntry, wg1 *sync.WaitGroup, goroutineSem chan struct{}, matchResult chan map[int]FxMatched) {
@@ -730,9 +730,6 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 			if bitsXL.Equal(bitsXR) {
 				LXL = GetInputs(L_Entry.PosL, L_Entry.PosR, tableIndex-1)
 				RXL = GetInputs(R_Entry.PosL, R_Entry.PosR, tableIndex-1)
-				fmt.Println(bitsXL, bitsXR)
-				fmt.Println(L_Entry, R_Entry)
-				fmt.Println(LXL, RXL)
 				bitsXL = bitarray.MustParse("")
 				bitsXR = bitarray.MustParse("")
 				for _, value := range LXL {
@@ -741,8 +738,6 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 				for _, value := range RXL {
 					bitsXR = bitsXR.Append(value)
 				}
-
-				fmt.Println("##################")
 			}
 		}
 		Compare := CompareProofBits(bitsXL, bitsXR, uint8(k))
@@ -935,7 +930,7 @@ func ByteToHexString(byteArray []byte) string {
 	hexString := hex.EncodeToString(byteArray)
 	return hexString
 }
-func f1N(k int, x uint64) PlotEntry {
+func f1N(k int, x uint64) ComputePlotEntry {
 
 	BitsX := bitarray.NewFromInt(big.NewInt(int64(x)))
 	BitsXPadToKBits := PedingBitsWithlen(BitsX, int(uint64(k)))
@@ -953,9 +948,9 @@ func f1N(k int, x uint64) PlotEntry {
 
 		Xbyte := bitsStringToBytes(BitsXPadToKBits.String())
 
-		newEntry := PlotEntry{
-			y:        Ybyte,
-			metadata: Xbyte,
+		newEntry := ComputePlotEntry{
+			y: Ybyte,
+			x: Xbyte,
 		}
 		return newEntry
 	} else {
@@ -978,9 +973,9 @@ func f1N(k int, x uint64) PlotEntry {
 
 		Xbyte := bitsStringToBytes(BitsXPadToKBits.String())
 
-		newEntry := PlotEntry{
-			y:        Ybyte,
-			metadata: Xbyte,
+		newEntry := ComputePlotEntry{
+			y: Ybyte,
+			x: Xbyte,
 		}
 		return newEntry
 	}
@@ -1096,16 +1091,16 @@ func GetQualityString(k uint8, proof *bitarray.BitArray, qualityIndex *bitarray.
 	return QualityStringBits
 }
 
-/*
 func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 	// Calculates f1 for each of the inputs
-	var results []PlotEntry
+
+	var results []ComputePlotEntry
 	var xs *bitarray.BitArray
 	for i := 0; i < 64; i++ {
 		x := proof.Slice(i*int(k), (i+1)*int(k)).ToUint64()
 		result := f1N(int(k), x)
 		results = append(results, result)
-		xs = xs.Append(PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.metadata).BitArray(), int(k)))
+		xs = xs.Append(PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.x).BitArray(), int(k)))
 		//fmt.Println("xs:", PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.y).BitArray(), uint64(k+6)))
 	}
 
@@ -1113,13 +1108,14 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 	// are doing a similar thing, we swap left and right, such that we end up with proof
 	// ordering.
 	for tableIndex := uint8(2); tableIndex < 8; tableIndex++ {
+		metadataSize := int(kVectorLens[tableIndex] * k) //0, 0, 1, 2, 4, 4, 3, 2
 		var newXs *bitarray.BitArray
-		var newResults []PlotEntry
+		var newResults []ComputePlotEntry
 		// Computes the output pair (fx, new_metadata)
 		//fmt.Println("tableIndex :", tableIndex)
 		// Iterates through pairs of things, starts with 64 things, then 32, etc, up to 2.
 		for i := 0; i < len(results); i += 2 {
-			var newOutput PlotEntry
+			var newOutput ComputePlotEntry
 			var Fx []byte
 			var C []byte
 
@@ -1128,7 +1124,8 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 				FxOutput, COutput := calbucket(
 					results[i],
 					results[i+1],
-					tableIndex,
+					int(tableIndex),
+					metadataSize,
 					int(k),
 				)
 				//fmt.Println("<", FxOutput, COutput)
@@ -1143,7 +1140,8 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 				FxOutput, COutput := calbucket(
 					results[i+1],
 					results[i],
-					tableIndex,
+					int(tableIndex),
+					metadataSize,
 					int(k),
 				)
 				//fmt.Println(">", FxOutput, COutput)
@@ -1157,9 +1155,9 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 				newXs = newXs.Append(xs.Slice(int(start), int(start2)))
 			}
 
-			newOutput = PlotEntry{
-				y:        Fx,
-				metadata: C,
+			newOutput = ComputePlotEntry{
+				y: Fx,
+				x: C,
 			}
 			newResults = append(newResults, newOutput)
 		}
@@ -1180,7 +1178,6 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 
 	return orderedProof
 }
-*/
 
 func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMemory, TmpFileCount uint64) {
 	start := time.Now()
@@ -1945,66 +1942,74 @@ func main() {
 		computTables(BucketCount, k, uint8(t), NumBucketFitInMemory, TmpFileCount)
 	}
 
-	//Gen Id for Table 7
-	for i := range plot.t7 {
-		Ybyte, _ := PedingBits(bitarray.NewFromInt(big.NewInt(int64(i)))).Bytes()
-		plot.t7[i].id = Ybyte
+	fmt.Println("GetQualitiesForChallenge")
+
+	fileName := "E://output/Table7.tmp"
+	fmt.Println(fileName, "ReadFile ")
+	data, err := os.ReadFile(fileName)
+	if err != nil {
+		fmt.Println(err)
 	}
 
-	fmt.Println("plot.t1:", len(plot.t1))
-	fmt.Println("plot.t2:", len(plot.t2))
-	fmt.Println("plot.t3:", len(plot.t3))
-	fmt.Println("plot.t4:", len(plot.t4))
-	fmt.Println("plot.t5:", len(plot.t5))
-	fmt.Println("plot.t6:", len(plot.t6))
-	fmt.Println("plot.t7:", len(plot.t7))
-	fmt.Println(" ")
+	YByteLens := cdiv(k)
+	PosLByteLens := 4
+	PosRByteLens := 4
+	F7entrySize := YByteLens + PosLByteLens + PosRByteLens
 
-	fmt.Println("GetQualitiesForChallenge")
-	/*
-		for {
-			challenge, _ := hex.DecodeString("e59031d7e1ea9166bf9de3b848dd907d95dbeccda36057dac3fcd3a87e3bbb3a")
-			//challenge, _ := RandomByteArray(32)
-			challenge_f7 := bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k).ToUint64()
-			last_5_bits := bitarray.NewFromBytes(challenge, 0, 256).Slice(256-5, 256)
-			fmt.Println("challenge:", bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k), challenge_f7, bitarray.NewFromBytes(challenge, 0, 256), last_5_bits.ToUint64(), last_5_bits)
-			for _, entry := range plot.t7 {
-				f7 := new(big.Int).SetBytes(entry.y).Uint64()
-				if f7 == challenge_f7 {
-					fmt.Println("challenge:", ByteToHexString(challenge), "found! in F7 (Table7)", f7, "|", challenge_f7)
-					E_id := new(big.Int).SetBytes(entry.id).Uint64()
-					E_y := new(big.Int).SetBytes(entry.y).Uint64()
-					E_x := new(big.Int).SetBytes(entry.metadata).Uint64()
-					E_LID := new(big.Int).SetBytes(entry.lid).Uint64()
-					E_RID := new(big.Int).SetBytes(entry.rid).Uint64()
-					fmt.Println("t7 : E_id", E_id, "E_Y", E_y, "E_X:", E_x, "E_LID:", E_LID, "E_RID:", E_RID)
+	allEntries := len(data) / F7entrySize
+	fmt.Println("allEntries :", allEntries)
+	hashmap_f7 := make(map[uint64]uint64) //[f7][EntryPos]
 
-					//get all 64 x value
-					//this is proof(xs) in proof ordering
-					xs := GetInputs(new(big.Int).SetBytes(entry.id).Uint64(), 7, k)
-					var proof *bitarray.BitArray
-					for _, x := range xs {
-						proof = proof.Append(x)
-					}
-					proofByte, _ := PedingBits(proof).Bytes()
-					fmt.Println("proof.String(): ", proof.String())
-					fmt.Println("proof.Hex(): ", ByteToHexString(proofByte))
-					// Gets the quality string from a proof in proof ordering. The quality string is two
-					// adjacent values, determined by the quality index (1-32), and the proof in plot
-					// ordering.
-					plotorderingProof := ProofToPlot(proof, uint8(k))
-					QualityStringBits := GetQualityString(uint8(k), proof, last_5_bits, challenge)
-					fmt.Println("Plotordering Proof : ", plotorderingProof)
-					fmt.Println("QualityString Bits : ", QualityStringBits)
+	for i := 0; i < allEntries; i++ {
+		EntryByte := data[i*F7entrySize : (i+1)*F7entrySize]
+		y := new(big.Int).SetBytes(EntryByte[0:YByteLens]).Uint64()
+		hashmap_f7[y] = uint64(i)
+	}
+	fmt.Println("created hashmap_f7 :", len(hashmap_f7))
 
-					PlotToProoft := PlotToProof(plotorderingProof, uint8(k))
-					fmt.Println("Proofordering Proof : ", PlotToProoft)
+	for {
+		challenge, _ := hex.DecodeString("e59031d7e1ea9166bf9de3b848dd907d95dbeccda36057dac3fcd3a87e3bbb3a")
+		//challenge, _ := RandomByteArray(32)
+		challenge_f7 := bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k).ToUint64()
+		last_5_bits := bitarray.NewFromBytes(challenge, 0, 256).Slice(256-5, 256)
+		fmt.Println("challenge:", bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k), challenge_f7, bitarray.NewFromBytes(challenge, 0, 256), last_5_bits.ToUint64(), last_5_bits)
 
-					fmt.Println("-------------------------------------------------------------------")
-				}
-			}
-			fmt.Println("")
-			break
-		}*/
+		_, ok := hashmap_f7[challenge_f7]
+		if !ok {
+			continue
+		}
+		fmt.Println("challenge:", ByteToHexString(challenge), "found! in F7 (Table7)", challenge_f7)
+		EntryPos := hashmap_f7[challenge_f7]
+		EntryByte := data[(int(EntryPos) * F7entrySize) : (int(EntryPos)*F7entrySize)+F7entrySize]
+
+		PosL := new(big.Int).SetBytes(EntryByte[YByteLens : YByteLens+PosLByteLens]).Uint64()
+		PosR := new(big.Int).SetBytes(EntryByte[YByteLens+PosLByteLens : F7entrySize]).Uint64()
+
+		fmt.Println("t7 : PosL", PosL, "PosR", PosR)
+
+		//get all 64 x value
+		//this is proof(xs) in proof ordering
+		xs := GetInputs(PosL, PosR, 6)
+		var proof *bitarray.BitArray
+		for _, x := range xs {
+			proof = proof.Append(x)
+		}
+		proofByte, _ := PedingBits(proof).Bytes()
+		fmt.Println("proof.String(): ", proof.String())
+		fmt.Println("proof.Hex(): ", ByteToHexString(proofByte))
+		// Gets the quality string from a proof in proof ordering. The quality string is two
+		// adjacent values, determined by the quality index (1-32), and the proof in plot
+		// ordering.
+		plotorderingProof := ProofToPlot(proof, uint8(k))
+		QualityStringBits := GetQualityString(uint8(k), proof, last_5_bits, challenge)
+		fmt.Println("Plotordering Proof : ", plotorderingProof)
+		fmt.Println("QualityString Bits : ", QualityStringBits)
+
+		PlotToProoft := PlotToProof(plotorderingProof, uint8(k))
+		fmt.Println("Proofordering Proof : ", PlotToProoft)
+
+		fmt.Println("-------------------------------------------------------------------")
+		break
+	}
 
 }

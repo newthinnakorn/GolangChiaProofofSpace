@@ -636,7 +636,7 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 					y := bitarray.NewBufferFromByteSlice(yByte).BitArray().ToUint64()
 					PosL := bitarray.NewBufferFromByteSlice(BytePosL).BitArray().ToUint64()
 					PosR := bitarray.NewBufferFromByteSlice(BytePosR).BitArray().ToUint64()
-					bucketID = uint32(y)
+					bucketID = uint32(BucketID(y))
 
 					if _, ok := localBuckets[bucketID]; !ok {
 						localBuckets[bucketID] = make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
@@ -794,7 +794,7 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		m++
 	}
 
-	res := make(map[int]FxMatched, 0)
+	res := make(map[int]FxMatched)
 	res[int(b)] = FxMatched{
 		MatchPos: Matches,
 		BucketL:  leftBucket,

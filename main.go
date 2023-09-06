@@ -554,8 +554,8 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 					entryBitArray = bitarray.NewBufferFromByteSlice(data[startByte : startByte+YXNumByte]).BitArray()
 					yStartBits := entryBitArray.Len() - (k + int(kExtraBits) + k)
 					yBitsLens := k + int(kExtraBits)
-					y = entryBitArray.Slice(yStartBits, yStartBits+yBitsLens)
-					x = entryBitArray.Slice(entryBitArray.Len()-k, entryBitArray.Len())
+					y = PedingBits(entryBitArray.Slice(yStartBits, yStartBits+yBitsLens))
+					x = PedingBits(entryBitArray.Slice(entryBitArray.Len()-k, entryBitArray.Len()))
 					bucketID = uint32(BucketID(y.ToUint64()))
 
 					if _, ok := localBuckets[bucketID]; !ok {
@@ -1200,7 +1200,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 
 	fmt.Println("Computing table ", table_index+1)
 	var wg sync.WaitGroup
-	numCPU := runtime.NumCPU() - 11
+	numCPU := runtime.NumCPU()
 	entryCount := 0
 
 	FirstLoad := true
@@ -1342,22 +1342,49 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 	// กำหนด buffered writer
 	F7WriteBuffer := bufio.NewWriterSize(F7file, buffSize)
 
-	count := uint64(0)
 	for {
-		if len(CurrentSlot.MatchPos) == 0 { //use only init CurrentSlot
+		if len(CurrentSlot.MatchPos) == 0 { //เช็ค CurrentSlot ว่ามีของยัง?, use only init CurrentSlot
 			for {
-				_, ok := currentTableTempSlot[current] // current = 0 init
+				_, ok := currentTableTempSlot[current] // ถ้าไม่มีให้ไปเช็คที่ TempSlot, current = 0 init
 				if ok {
-					CurrentSlot = currentTableTempSlot[current]
-					delete(currentTableTempSlot, current)
+					CurrentSlot = currentTableTempSlot[current] //ถ้ามีก็โยนของเข้า CurrentSlot
+					delete(currentTableTempSlot, current)       //แล้วลบออกจาก TempSlot
 
-					for _, pos := range CurrentSlot.MatchPos {
+					for _, pos := range CurrentSlot.MatchPos { // เพิ่ม L Pos Matched เข้าไปที่ CurrentHashmap
 						_, ok = CurrentHashmap[pos[0]]
 						if !ok {
+							//CurrentHashmap [pos L เก่า][Pos L ใหม่]
+							//HashmapCount คือ New Pos ของ ตาราง L
 							CurrentHashmap[pos[0]] = uint64(HashmapCount) //โยน pos เข้าไปที่ hashmap พร้อม value ของ new pos
 							HashmapCount++
 						}
 					}
+					//เลือก entry ที่ใช้ OutputPlotEntryL
+					//Select used Entry and append to CurrentOut, aka create new CurrentOut from CurrentHashmap
+					//88888888888888888888888888888888888888888888888888888888888888888888888888888
+					// Create slice of key-value pairs
+					pairs := make([][2]interface{}, 0, len(CurrentHashmap))
+
+					for key, v := range CurrentHashmap {
+						pairs = append(pairs, [2]interface{}{key, v})
+					}
+
+					// Sort slice based on values
+					sort.Slice(pairs, func(i, j int) bool {
+						return pairs[i][1].(uint64) < pairs[j][1].(uint64)
+					})
+
+					// Extract sorted keys
+					keys := make([]int, len(pairs))
+					for i, p := range pairs {
+						keys[i] = p[0].(int)
+					}
+					// use sorted map
+					for _, key := range keys {
+						SelectedEntry := CurrentSlot.BucketL[key] // ถูกแล้ว
+						OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
+					}
+					//88888888888888888888888888888888888888888888888888888888888888888888888888888
 					break
 				} else {
 					data := <-matchResult
@@ -1373,6 +1400,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				_, ok := currentTableTempSlot[current+1] // current = 0 init
 				if ok {
 					NexttSlot = currentTableTempSlot[current+1]
+					delete(currentTableTempSlot, current+1) //แล้วลบออกจาก TempSlot
 					break
 				} else {
 					data := <-matchResult
@@ -1383,19 +1411,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			}
 		}
 
-		OutputPlotEntryR = CurrentSlot.Output //create new NextOut from CurrentSlot
-
-		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
-			OutputPlotEntryR[i].PosL = CurrentHashmap[v[0]] // ถูกแล้ว //add new PosL to NextOut
-		}
-
-		//Select used Entry and append to CurrentOut, aka create new CurrentOut from CurrentHashmap
-		for key, _ := range CurrentHashmap {
-			SelectedEntry := CurrentSlot.BucketL[key] // ถูกแล้ว
-			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
-		}
-
-		//create NexttHashmap
+		//create NexttHashmap from Current matches R
 		for _, pos := range CurrentSlot.MatchPos {
 			_, ok := NexttHashmap[pos[1]]
 			if !ok {
@@ -1403,7 +1419,8 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				HashmapCount++
 			}
 		}
-
+		//fmt.Println("#########################################")
+		//create NexttHashmap from Next matches L
 		for _, pos := range NexttSlot.MatchPos {
 			_, ok := NexttHashmap[pos[0]]
 			if !ok {
@@ -1412,13 +1429,38 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			}
 		}
 
-		//Select used Entry from NexttHashmap and append to CurrentOut
-		for key, _ := range NexttHashmap {
-			SelectedEntry := NexttSlot.BucketL[key] // ถูกแล้ว หรือสามารถใช้ NexttSlot.BucketL ก็ได้
-			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
+		OutputPlotEntryR = CurrentSlot.Output //create new NextOut from CurrentSlot
+
+		for i, pos := range CurrentSlot.MatchPos { // ถูกแล้ว
+			OutputPlotEntryR[i].PosL = CurrentHashmap[pos[0]] // ถูกแล้ว //add new PosL to NextOut
 		}
 
-		parallelMergeSort(OutputPlotEntryL, 4)
+		//88888888888888888888888888888888888888888888888888888888888888888888888888888
+		// Create slice of key-value pairs
+		Nextpairs := make([][2]interface{}, 0, len(NexttHashmap))
+
+		for key, v := range NexttHashmap {
+			Nextpairs = append(Nextpairs, [2]interface{}{key, v})
+		}
+
+		// Sort slice based on values
+		sort.Slice(Nextpairs, func(i, j int) bool {
+			return Nextpairs[i][1].(uint64) < Nextpairs[j][1].(uint64)
+		})
+
+		// Extract sorted keys
+		Nextkeys := make([]int, len(Nextpairs))
+		for i, p := range Nextpairs {
+			Nextkeys[i] = p[0].(int)
+		}
+		// use sorted map
+		for _, key := range Nextkeys {
+			SelectedEntry := NexttSlot.BucketL[key] // ถูกแล้ว
+			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
+		}
+		//88888888888888888888888888888888888888888888888888888888888888888888888888888
+
+		//parallelMergeSort(OutputPlotEntryL, 4)
 
 		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
 			OutputPlotEntryR[i].PosR = NexttHashmap[v[1]] //add new PosR to NextOut
@@ -1433,12 +1475,6 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				OutputPlotEntryR[i].PosR = PosR
 			}
 		}
-
-		current++
-		CurrentSlot = NexttSlot
-		NexttSlot = FxMatched{}
-		CurrentHashmap = NexttHashmap
-		NexttHashmap = make(map[int]uint64)
 
 		//นำไปใช้งาน
 		for i := 0; i < len(OutputPlotEntryL); i++ {
@@ -1529,18 +1565,20 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			}
 		}
 
+		current++
+		CurrentSlot = NexttSlot
+		NexttSlot = FxMatched{}
+		CurrentHashmap = NexttHashmap
+		NexttHashmap = make(map[int]uint64)
 		OutputPlotEntryR = make([]ComputePlotEntry, 0, 1)
 		OutputPlotEntryL = make([]ComputePlotEntry, 0, 1)
 
-		if current%100 == 0 {
-			runtime.GC()
-		}
 		if uint64(current) == (BucketCount - 2) {
 			break
 		}
 
 	}
-	fmt.Println(count)
+
 	if table_index+1 != 7 {
 		for i, object := range objfileObjects { // Check if the buffer needs flushing
 			err = object.Flush()

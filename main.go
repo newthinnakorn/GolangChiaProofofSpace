@@ -41,8 +41,8 @@ type ComputePlotEntry struct {
 	y        []byte
 	x        []byte
 	xlxr     []byte
-	PosL     int
-	PosR     int
+	PosL     uint64
+	PosR     uint64
 	isSwitch bool
 }
 
@@ -71,7 +71,7 @@ var kVectorLens = []uint8{0, 0, 1, 2, 4, 4, 3, 2}
 const (
 	sigma                = "expand 32-byte k"
 	tau                  = "expand 16-byte k"
-	k                    = 22
+	k                    = 20
 	kSize                = k
 	kF1BlockSizeBits int = 512
 
@@ -552,7 +552,9 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 					}
 					startByte = int(i) * YXNumByte
 					entryBitArray = bitarray.NewBufferFromByteSlice(data[startByte : startByte+YXNumByte]).BitArray()
-					y = entryBitArray.Slice(entryBitArray.Len()-(k+int(kExtraBits)+k), entryBitArray.Len()-(k+int(kExtraBits)+k)+k+int(kExtraBits))
+					yStartBits := entryBitArray.Len() - (k + int(kExtraBits) + k)
+					yBitsLens := k + int(kExtraBits)
+					y = entryBitArray.Slice(yStartBits, yStartBits+yBitsLens)
 					x = entryBitArray.Slice(entryBitArray.Len()-k, entryBitArray.Len())
 					bucketID = uint32(BucketID(y.ToUint64()))
 
@@ -618,8 +620,8 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 				var yByte []byte
 				var xByte []byte
 				var xlxr []byte
-				var PosL int
-				var PosR int
+				var PosL uint64
+				var PosR uint64
 				for i := startIndex; i < endIndex; i++ {
 					if i >= maxValue {
 						break
@@ -631,8 +633,8 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 					xByte = byteEntry[yByteSize:(yByteSize + xByteSize)]
 					xlxr = byteEntry[(yByteSize + xByteSize):(yByteSize + xByteSize + xlxrByteSize)]
 					y = entryBitArray.Slice(0, yByteSize*8)
-					PosL = int(entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize)*8, (yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8).ToUint64())
-					PosR = int(entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8, EntryByteSize*8).ToUint64())
+					PosL = entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize)*8, (yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8).ToUint64()
+					PosR = entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8, EntryByteSize*8).ToUint64()
 					bucketID = uint32(BucketID(y.ToUint64()))
 
 					if _, ok := localBuckets[bucketID]; !ok {
@@ -705,8 +707,9 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 	Matches := findMatches(matchingShiftsC, leftBucket, rightBucket)
 	NewEntries := make([]ComputePlotEntry, 0)
 	for _, match := range Matches {
-
-		f, c := calbucket(leftBucket[match[0]], rightBucket[match[1]], int(tableIndex+1), metadataSize, k)
+		L_Entry := leftBucket[match[0]]
+		R_Entry := rightBucket[match[1]]
+		f, c := calbucket(L_Entry, R_Entry, int(tableIndex+1), metadataSize, k)
 		Fx, _ := PedingBits(f).Bytes()
 		C, _ := PedingBits(c).Bytes()
 
@@ -717,23 +720,28 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		var newxlxr *bitarray.BitArray
 		var isSwitch bool
 		if tableIndex+1 == 2 {
-			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].x[:]), k)
-			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
+			bitsXL = NewBits(new(big.Int).SetBytes(L_Entry.x[:]), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(R_Entry.x[:]), k)
 		} else {
-			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].x[:]), k)
-			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
-			if bitsXL.Equal(bitsXR) {
+			bitsXL = NewBits(new(big.Int).SetBytes(L_Entry.xlxr), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(R_Entry.xlxr), k)
 
-				/*				LXL = GetInputs(new(big.Int).SetBytes().Uint64(), tableIndex, k)
-								RXL = GetInputs(new(big.Int).SetBytes().Uint64(), tableIndex, k)
-								bitsXL = bitarray.MustParse("")
-								bitsXR = bitarray.MustParse("")
-								for _, value := range LXL {
-									bitsXL = bitsXL.Append(value)
-								}
-								for _, value := range RXL {
-									bitsXR = bitsXR.Append(value)
-								}*/
+			if bitsXL.Equal(bitsXR) {
+				LXL = GetInputs(L_Entry.PosL, L_Entry.PosR, tableIndex-1)
+				RXL = GetInputs(R_Entry.PosL, R_Entry.PosR, tableIndex-1)
+				fmt.Println(bitsXL, bitsXR)
+				fmt.Println(L_Entry, R_Entry)
+				fmt.Println(LXL, RXL)
+				bitsXL = bitarray.MustParse("")
+				bitsXR = bitarray.MustParse("")
+				for _, value := range LXL {
+					bitsXL = bitsXL.Append(value)
+				}
+				for _, value := range RXL {
+					bitsXR = bitsXR.Append(value)
+				}
+
+				fmt.Println("##################")
 			}
 		}
 		Compare := CompareProofBits(bitsXL, bitsXR, uint8(k))
@@ -795,6 +803,58 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 	//fmt.Printf("%d %d %d %d \n", b, len(leftBucket), len(rightBucket), m)
 	matchResult <- res
 	<-goroutineSem
+}
+func GetInputs(PosL uint64, PosR uint64, tableIndex uint8) []*bitarray.BitArray {
+	fileName := fmt.Sprintf("E://output/Table%d.tmp", tableIndex)
+	data, err := os.ReadFile(fileName)
+	if err != nil {
+		fmt.Println(err)
+	}
+	XByte := 0
+	var EntryL_Bitarray *bitarray.BitArray
+	var EntryR_Bitarray *bitarray.BitArray
+	var result []*bitarray.BitArray
+	if tableIndex == 1 {
+		XByte = cdiv(k)
+
+		PosL_ReadByte := PosL * uint64(XByte)
+		PosR_ReadByte := PosR * uint64(XByte)
+
+		bitsXL := NewBits(new(big.Int).SetBytes(data[PosL_ReadByte:PosL_ReadByte+uint64(XByte)]), k)
+		bitsXR := NewBits(new(big.Int).SetBytes(data[PosR_ReadByte:PosR_ReadByte+uint64(XByte)]), k)
+
+		result = append(result, bitsXL, bitsXR)
+	} else {
+
+		PosLByteSize := 4
+		PosRByteSize := 4
+		EntryByteSize := PosLByteSize + PosRByteSize
+
+		PosL_ReadByte := PosL * uint64(EntryByteSize)
+		PosR_ReadByte := PosR * uint64(EntryByteSize)
+
+		Get_PosL_BitsPos_start := 0
+		Get_PosL_BitsPos_end := PosLByteSize * 8
+
+		Get_PosR_BitsPos_start := PosLByteSize * 8
+		Get_PosR_BitsPos_end := (PosRByteSize + PosRByteSize) * 8
+
+		EntryL_Bitarray = bitarray.NewBufferFromByteSlice(data[PosL_ReadByte : PosL_ReadByte+uint64(EntryByteSize)]).BitArray()
+		EntryR_Bitarray = bitarray.NewBufferFromByteSlice(data[PosR_ReadByte : PosR_ReadByte+uint64(EntryByteSize)]).BitArray()
+
+		L_PosL := EntryL_Bitarray.Slice(Get_PosL_BitsPos_start, Get_PosL_BitsPos_end).ToUint64()
+		L_PosR := EntryL_Bitarray.Slice(Get_PosR_BitsPos_start, Get_PosR_BitsPos_end).ToUint64()
+
+		R_PosL := EntryR_Bitarray.Slice(Get_PosL_BitsPos_start, Get_PosL_BitsPos_end).ToUint64()
+		R_PosR := EntryR_Bitarray.Slice(Get_PosR_BitsPos_start, Get_PosR_BitsPos_end).ToUint64()
+
+		L_xlxr := GetInputs(L_PosL, L_PosR, tableIndex-1)
+		R_xlxr := GetInputs(R_PosL, R_PosR, tableIndex-1)
+
+		result = append(L_xlxr, R_xlxr...)
+
+	}
+	return result //return l+r
 }
 
 type FxFandC struct {
@@ -1139,7 +1199,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 
 	fmt.Println("Computing table ", table_index+1)
 	var wg sync.WaitGroup
-	numCPU := runtime.NumCPU()
+	numCPU := runtime.NumCPU() - 11
 	entryCount := 0
 
 	FirstLoad := true
@@ -1150,7 +1210,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 	buckets := make(map[uint32][]ComputePlotEntry)
 	var err error
 	wg.Add(1)
-	matchResult := make(chan map[int]FxMatched, numCPU*2)
+	matchResult := make(chan map[int]FxMatched, numCPU)
 	go func(wg *sync.WaitGroup) {
 		defer wg.Done()
 		var wg1 sync.WaitGroup
@@ -1325,7 +1385,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 		OutputPlotEntryR = CurrentSlot.Output //create new NextOut from CurrentSlot
 
 		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
-			OutputPlotEntryR[i].PosL = int(CurrentHashmap[v[0]]) // ถูกแล้ว //add new PosL to NextOut
+			OutputPlotEntryR[i].PosL = CurrentHashmap[v[0]] // ถูกแล้ว //add new PosL to NextOut
 		}
 
 		//Select used Entry and append to CurrentOut, aka create new CurrentOut from CurrentHashmap
@@ -1357,16 +1417,18 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
 		}
 
-		//parallelMergeSort(OutputPlotEntryL, 4)
+		parallelMergeSort(OutputPlotEntryL, 4)
 
 		for i, v := range CurrentSlot.MatchPos { // ถูกแล้ว
-			OutputPlotEntryR[i].PosR = int(NexttHashmap[v[1]]) //add new PosR to NextOut
+			OutputPlotEntryR[i].PosR = NexttHashmap[v[1]] //add new PosR to NextOut
 		}
+
 		for i, v := range OutputPlotEntryR { // ถูกแล้ว
 			if v.isSwitch == true {
-				PosL := v.PosL
-				PosR := v.PosR
-				OutputPlotEntryR[i].PosR = PosL
+				PosL := v.PosR
+				PosR := v.PosL
+
+				OutputPlotEntryR[i].PosL = PosL
 				OutputPlotEntryR[i].PosR = PosR
 			}
 		}
@@ -1432,9 +1494,8 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			for i := 0; i < len(OutputPlotEntryR); i++ {
 				var BucketIndex int
 				var dataWrite []byte
-				XBits := bitarray.NewFromBytes(OutputPlotEntryR[i].y, 0, len(OutputPlotEntryR[i].y)*8)
-				BitsXPadToKBits := XBits.Slice(0, XBits.Len()) //silce bits 0:6(kExtraBits)
-				bucketid := BucketID(BitsXPadToKBits.ToUint64())
+
+				bucketid := BucketID(new(big.Int).SetBytes(OutputPlotEntryR[i].y).Uint64())
 
 				y := OutputPlotEntryR[i].y
 				x := OutputPlotEntryR[i].x

@@ -615,27 +615,28 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 				startByte := 0
 				localBuckets := make(map[uint32][]ComputePlotEntry)
 				var bucketID uint32
-				var y *bitarray.BitArray
-				var entryBitArray *bitarray.BitArray
+
 				var yByte []byte
 				var xByte []byte
 				var xlxr []byte
-				var PosL uint64
-				var PosR uint64
+
 				for i := startIndex; i < endIndex; i++ {
 					if i >= maxValue {
 						break
 					}
 					startByte = int(i) * EntryByteSize
 					byteEntry := data[startByte : startByte+EntryByteSize]
-					entryBitArray = bitarray.NewBufferFromByteSlice(byteEntry).BitArray()
+
 					yByte = byteEntry[0:yByteSize]
 					xByte = byteEntry[yByteSize:(yByteSize + xByteSize)]
 					xlxr = byteEntry[(yByteSize + xByteSize):(yByteSize + xByteSize + xlxrByteSize)]
-					y = entryBitArray.Slice(0, yByteSize*8)
-					PosL = entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize)*8, (yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8).ToUint64()
-					PosR = entryBitArray.Slice((yByteSize+xByteSize+xlxrByteSize+PosLByteSize)*8, EntryByteSize*8).ToUint64()
-					bucketID = uint32(BucketID(y.ToUint64()))
+					BytePosL := byteEntry[(yByteSize + xByteSize + xlxrByteSize):(yByteSize + xByteSize + xlxrByteSize + PosLByteSize)]
+					BytePosR := byteEntry[(yByteSize + xByteSize + xlxrByteSize + PosLByteSize):EntryByteSize]
+
+					y := bitarray.NewBufferFromByteSlice(yByte).BitArray().ToUint64()
+					PosL := bitarray.NewBufferFromByteSlice(BytePosL).BitArray().ToUint64()
+					PosR := bitarray.NewBufferFromByteSlice(BytePosR).BitArray().ToUint64()
+					bucketID = uint32(y)
 
 					if _, ok := localBuckets[bucketID]; !ok {
 						localBuckets[bucketID] = make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
@@ -793,7 +794,7 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		m++
 	}
 
-	res := make(map[int]FxMatched)
+	res := make(map[int]FxMatched, 0)
 	res[int(b)] = FxMatched{
 		MatchPos: Matches,
 		BucketL:  leftBucket,
@@ -1341,6 +1342,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 	// กำหนด buffered writer
 	F7WriteBuffer := bufio.NewWriterSize(F7file, buffSize)
 
+	count := uint64(0)
 	for {
 		if len(CurrentSlot.MatchPos) == 0 { //use only init CurrentSlot
 			for {
@@ -1354,7 +1356,6 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 						if !ok {
 							CurrentHashmap[pos[0]] = uint64(HashmapCount) //โยน pos เข้าไปที่ hashmap พร้อม value ของ new pos
 							HashmapCount++
-
 						}
 					}
 					break
@@ -1473,6 +1474,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 
 		if table_index+1 == 7 {
 			for i := 0; i < len(OutputPlotEntryR); i++ {
+
 				var dataWrite []byte
 				y := OutputPlotEntryR[i].y
 				PosLByte := make([]byte, 4)
@@ -1492,6 +1494,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			}
 		} else {
 			for i := 0; i < len(OutputPlotEntryR); i++ {
+
 				var BucketIndex int
 				var dataWrite []byte
 
@@ -1535,8 +1538,9 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 		if uint64(current) == (BucketCount - 2) {
 			break
 		}
-	}
 
+	}
+	fmt.Println(count)
 	if table_index+1 != 7 {
 		for i, object := range objfileObjects { // Check if the buffer needs flushing
 			err = object.Flush()

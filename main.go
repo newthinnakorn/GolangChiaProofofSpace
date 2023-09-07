@@ -11,7 +11,6 @@ import (
 	"log"
 	"lukechampine.com/blake3"
 	"math/big"
-	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"sort"
@@ -20,41 +19,24 @@ import (
 	"time"
 )
 
-type PlotEntry struct {
-	y        []byte
-	metadata []byte
-	xlxr     []byte
-	lid      []byte
-	rid      []byte
-	id       []byte
-	used     bool
-}
 type F1Entry struct {
 	xy          [((k + kExtraBits + k) + 8 - 1) / 8]byte
 	BucketIndex int
 }
-type T1Entry struct {
-	y [((k + kExtraBits) + 8 - 1) / 8]byte
-	x [((k) + 8 - 1) / 8]byte
-}
+
+// Define custom types for better memory layout optimization
+type YBytes [((k + kExtraBits) + 7) / 8]byte
+type XLXRBytes [(k + 7) / 8]byte
+
 type ComputePlotEntry struct {
-	y        []byte
+	y        YBytes
 	x        []byte
-	xlxr     []byte
+	xlxr     XLXRBytes
 	PosL     uint64
 	PosR     uint64
 	isSwitch bool
 }
 
-type Plot struct {
-	t1 []PlotEntry
-	t2 []PlotEntry
-	t3 []PlotEntry
-	t4 []PlotEntry
-	t5 []PlotEntry
-	t6 []PlotEntry
-	t7 []PlotEntry
-}
 type Range struct {
 	Start uint64
 	End   uint64
@@ -63,21 +45,20 @@ type chacha8Ctx struct {
 	input [16]uint32
 }
 type FxMatched struct {
+	BucketL  *[]ComputePlotEntry
+	Output   *[]ComputePlotEntry
 	MatchPos [][]int
-	BucketL  []ComputePlotEntry
-	Output   []ComputePlotEntry
 }
 
 var F1NumByte = cdiv(k + int(kExtraBits) + k)
 var ctx chacha8Ctx
-var plot Plot
+
 var kVectorLens = []uint8{0, 0, 1, 2, 4, 4, 3, 2}
 
 const (
 	sigma                = "expand 32-byte k"
 	tau                  = "expand 16-byte k"
-	k                    = 20
-	kSize                = k
+	k                    = 26
 	kF1BlockSizeBits int = 512
 
 	// Extra bits of output from the f functions.
@@ -281,15 +262,7 @@ func PedingBitsRight(intToBitArray *bitarray.BitArray) *bitarray.BitArray {
 	intToBitArrayPad = intToBitArrayPad.Append(intToBitArray, pad)
 	return intToBitArrayPad
 }
-func padByteLeft(in []byte, bytelen int) []byte {
-	out := make([]byte, bytelen) //byte8 = 64bit
-	if len(in) > bytelen {
-		fmt.Println(bytelen, len(in), in, bytelen-len(in))
-	}
 
-	copy(out[bytelen-len(in):], in)
-	return out
-}
 func appendExtraDataPadRight(outputBits, L *bitarray.BitArray) *bitarray.BitArray { // pad right
 	extraData := L.Slice(0, min(int(kExtraBits), L.Len()))
 	if extraData.Len() < int(kExtraBits) {
@@ -529,6 +502,7 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 		}
 		//fmt.Println(maxValue, "Start LoadFile to []PlotEntry")
 		// Create a wait group to synchronize goroutines
+		// Reuse BitArray
 
 		var wg sync.WaitGroup
 		var mutex sync.Mutex
@@ -546,32 +520,31 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 				startByte := 0
 				localBuckets := make(map[uint32][]ComputePlotEntry)
 				var bucketID uint32
-				var y *bitarray.BitArray
-				var x *bitarray.BitArray
-				var entryBitArray *bitarray.BitArray
-				var yByte []byte
-				var xByte []byte
+
+				// Reuse BitArray
+				entryBitArray := bitarray.NewBufferFromByteSlice(nil).BitArray()
+
 				for i := startIndex; i < endIndex; i++ {
 					if i >= maxValue {
 						break
 					}
 					startByte = int(i) * YXNumByte
+
 					entryBitArray = bitarray.NewBufferFromByteSlice(data[startByte : startByte+YXNumByte]).BitArray()
 					yStartBits := entryBitArray.Len() - (k + int(kExtraBits) + k)
 					yBitsLens := k + int(kExtraBits)
-					y = PedingBits(entryBitArray.Slice(yStartBits, yStartBits+yBitsLens))
-					x = PedingBits(entryBitArray.Slice(entryBitArray.Len()-k, entryBitArray.Len()))
+					y := PedingBits(entryBitArray.Slice(yStartBits, yStartBits+yBitsLens))
+					x := PedingBits(entryBitArray.Slice(entryBitArray.Len()-k, entryBitArray.Len()))
 					bucketID = uint32(BucketID(y.ToUint64()))
 
 					if _, ok := localBuckets[bucketID]; !ok {
 						localBuckets[bucketID] = make([]ComputePlotEntry, 0, 1) // Adjust the initial capacity as needed
 					}
-					yByte, _ = PedingBits(y).Bytes()
-					xByte, _ = PedingBits(x).Bytes()
+					yByte, _ := PedingBits(y).Bytes()
+					xByte, _ := PedingBits(x).Bytes()
 					newEntry := ComputePlotEntry{
-						y:        yByte,
+						y:        [((k + kExtraBits) + 8 - 1) / 8]byte(yByte),
 						x:        xByte,
-						xlxr:     nil,
 						PosL:     0,
 						PosR:     0,
 						isSwitch: false,
@@ -648,9 +621,9 @@ func parallelBucketInsert(buckets map[uint32][]ComputePlotEntry, data []byte, ta
 					}
 
 					newEntry := ComputePlotEntry{
-						y:        yByte,
+						y:        [((k + kExtraBits) + 8 - 1) / 8]byte(yByte),
 						x:        xByte,
-						xlxr:     xlxr,
+						xlxr:     [((k) + 8 - 1) / 8]byte(xlxr),
 						PosL:     PosL,
 						PosR:     PosR,
 						isSwitch: false,
@@ -684,17 +657,17 @@ func parallelMergeSortBuckets(buckets map[uint32][]ComputePlotEntry, numCPU int)
 
 	wg.Wait()
 }
-func loadDataFromFile(filename string, table_index uint8, metadataSize int) (map[uint32][]ComputePlotEntry, error) {
-	buckets := make(map[uint32][]ComputePlotEntry)
+func loadDataFromFile(buckets map[uint32][]ComputePlotEntry, filename string, table_index uint8, metadataSize int) {
 	startTimeReadFile := time.Now()
 	fmt.Println(filename, "ReadFile ")
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Println(err)
 	}
+
 	timeElapsed := time.Since(startTimeReadFile)
 	fmt.Println(filename, "End ReadFile", len(data), "time took ", timeElapsed)
-
+	fmt.Println(filename, "Start parallelBucketInsert:", len(buckets))
 	parallelBucketInsert(buckets, data, table_index, metadataSize)
 
 	fmt.Println(filename, "Start parallelMergeSortBuckets:", len(buckets))
@@ -702,8 +675,7 @@ func loadDataFromFile(filename string, table_index uint8, metadataSize int) (map
 	parallelMergeSortBuckets(buckets, runtime.NumCPU())
 	timeElapsed = time.Since(startTimeReadFile)
 	fmt.Println(filename, "End parallelMergeSortBuckets:", len(buckets), "time took ", timeElapsed)
-	//runtime.GC()
-	return buckets, nil
+
 }
 func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint8, metadataSize int, leftBucket, rightBucket []ComputePlotEntry, wg1 *sync.WaitGroup, goroutineSem chan struct{}, matchResult chan map[int]FxMatched) {
 	//start := time.Now()
@@ -713,9 +685,8 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 	Matches := findMatches(matchingShiftsC, leftBucket, rightBucket)
 	NewEntries := make([]ComputePlotEntry, 0)
 	for _, match := range Matches {
-		L_Entry := leftBucket[match[0]]
-		R_Entry := rightBucket[match[1]]
-		f, c := calbucket(L_Entry, R_Entry, int(tableIndex+1), metadataSize, k)
+
+		f, c := calbucket(leftBucket[match[0]], rightBucket[match[1]], int(tableIndex+1), metadataSize, k)
 		Fx, _ := PedingBits(f).Bytes()
 		C, _ := PedingBits(c).Bytes()
 
@@ -726,15 +697,15 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		var newxlxr *bitarray.BitArray
 		var isSwitch bool
 		if tableIndex+1 == 2 {
-			bitsXL = NewBits(new(big.Int).SetBytes(L_Entry.x[:]), k)
-			bitsXR = NewBits(new(big.Int).SetBytes(R_Entry.x[:]), k)
+			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].x[:]), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].x[:]), k)
 		} else {
-			bitsXL = NewBits(new(big.Int).SetBytes(L_Entry.xlxr), k)
-			bitsXR = NewBits(new(big.Int).SetBytes(R_Entry.xlxr), k)
+			bitsXL = NewBits(new(big.Int).SetBytes(leftBucket[match[0]].xlxr[:]), k)
+			bitsXR = NewBits(new(big.Int).SetBytes(rightBucket[match[1]].xlxr[:]), k)
 
 			if bitsXL.Equal(bitsXR) {
-				LXL = GetInputs(L_Entry.PosL, L_Entry.PosR, tableIndex-1)
-				RXL = GetInputs(R_Entry.PosL, R_Entry.PosR, tableIndex-1)
+				LXL = GetInputs(leftBucket[match[0]].PosL, leftBucket[match[0]].PosR, tableIndex-1)
+				RXL = GetInputs(rightBucket[match[1]].PosL, rightBucket[match[1]].PosR, tableIndex-1)
 				bitsXL = bitarray.MustParse("")
 				bitsXR = bitarray.MustParse("")
 				for _, value := range LXL {
@@ -774,7 +745,7 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		if tableIndex+1 == 7 {
 			f7, _ := PedingBits(f.Slice(0, k)).Bytes()
 			newEntry := ComputePlotEntry{
-				y:        f7,
+				y:        [((k + kExtraBits) + 8 - 1) / 8]byte(f7),
 				PosL:     0,
 				PosR:     0,
 				isSwitch: isSwitch,
@@ -782,9 +753,9 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 			NewEntries = append(NewEntries, newEntry)
 		} else {
 			newEntry := ComputePlotEntry{
-				y:        Fx,
+				y:        [((k + kExtraBits) + 8 - 1) / 8]byte(Fx),
 				x:        C,
-				xlxr:     Bytesxlxr,
+				xlxr:     [((k) + 8 - 1) / 8]byte(Bytesxlxr),
 				PosL:     0,
 				PosR:     0,
 				isSwitch: isSwitch,
@@ -797,12 +768,14 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 	res := make(map[int]FxMatched)
 	res[int(b)] = FxMatched{
 		MatchPos: Matches,
-		BucketL:  leftBucket,
-		Output:   NewEntries,
+		BucketL:  &leftBucket,
+		Output:   &NewEntries,
 	}
 	//timeElapsed := time.Since(start)
 	//fmt.Printf("%d %d %d %d \n", b, len(leftBucket), len(rightBucket), m)
+
 	matchResult <- res
+
 	<-goroutineSem
 }
 func GetInputs(PosL uint64, PosR uint64, tableIndex uint8) []*bitarray.BitArray {
@@ -899,7 +872,7 @@ func ByteToHexString(byteArray []byte) string {
 	hexString := hex.EncodeToString(byteArray)
 	return hexString
 }
-func f1N(k int, x uint64) ComputePlotEntry {
+func f1N(x uint64) ComputePlotEntry {
 
 	BitsX := bitarray.NewFromInt(big.NewInt(int64(x)))
 	BitsXPadToKBits := PedingBitsWithlen(BitsX, int(uint64(k)))
@@ -918,7 +891,7 @@ func f1N(k int, x uint64) ComputePlotEntry {
 		Xbyte := bitsStringToBytes(BitsXPadToKBits.String())
 
 		newEntry := ComputePlotEntry{
-			y: Ybyte,
+			y: [((k + kExtraBits) + 8 - 1) / 8]byte(Ybyte),
 			x: Xbyte,
 		}
 		return newEntry
@@ -943,7 +916,7 @@ func f1N(k int, x uint64) ComputePlotEntry {
 		Xbyte := bitsStringToBytes(BitsXPadToKBits.String())
 
 		newEntry := ComputePlotEntry{
-			y: Ybyte,
+			y: [((k + kExtraBits) + 8 - 1) / 8]byte(Ybyte),
 			x: Xbyte,
 		}
 		return newEntry
@@ -994,14 +967,14 @@ func GetQualityString(k uint8, proof *bitarray.BitArray, qualityIndex *bitarray.
 	QualityStringBits := bitarray.NewBufferFromByteSlice(hash[:]).BitArray()
 	return QualityStringBits
 }
-func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
+func PlotToProof(proof *bitarray.BitArray) *bitarray.BitArray {
 	// Calculates f1 for each of the inputs
 
 	var results []ComputePlotEntry
 	var xs *bitarray.BitArray
 	for i := 0; i < 64; i++ {
-		x := proof.Slice(i*int(k), (i+1)*int(k)).ToUint64()
-		result := f1N(int(k), x)
+		x := proof.Slice(i*k, (i+1)*k).ToUint64()
+		result := f1N(x)
 		results = append(results, result)
 		xs = xs.Append(PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.x).BitArray(), int(k)))
 		//fmt.Println("xs:", PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.y).BitArray(), uint64(k+6)))
@@ -1023,13 +996,13 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 			var C []byte
 
 			// Compares the buckets of both ys to see which one goes on the left and which one goes on the right
-			if bitarray.NewBufferFromByteSlice(results[i].y).Uint64() < bitarray.NewBufferFromByteSlice(results[i+1].y).Uint64() {
+			if bitarray.NewBufferFromByteSlice(results[i].y[:]).Uint64() < bitarray.NewBufferFromByteSlice(results[i+1].y[:]).Uint64() {
 				FxOutput, COutput := calbucket(
 					results[i],
 					results[i+1],
 					int(tableIndex),
 					metadataSize,
-					int(k),
+					k,
 				)
 				//fmt.Println("<", FxOutput, COutput)
 				Fx, _ = PedingBits(FxOutput).Bytes()
@@ -1045,7 +1018,7 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 					results[i],
 					int(tableIndex),
 					metadataSize,
-					int(k),
+					k,
 				)
 				//fmt.Println(">", FxOutput, COutput)
 				Fx, _ = PedingBits(FxOutput).Bytes()
@@ -1059,7 +1032,7 @@ func PlotToProof(proof *bitarray.BitArray, k uint8) *bitarray.BitArray {
 			}
 
 			newOutput = ComputePlotEntry{
-				y: Fx,
+				y: [((k + kExtraBits) + 8 - 1) / 8]byte(Fx),
 				x: C,
 			}
 			newResults = append(newResults, newOutput)
@@ -1119,10 +1092,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				startload := time.Now()
 				fileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index, LoopTmpFile)
 				buckets = make(map[uint32][]ComputePlotEntry)
-				buckets, err = loadDataFromFile(fileName, table_index, metadataSize)
-				if err != nil {
-					fmt.Println("err loadDataFromFile:", err)
-				}
+				loadDataFromFile(buckets, fileName, table_index, metadataSize)
 
 				if NeedLoad == true {
 					buckets[b] = bucketsContinue
@@ -1140,9 +1110,9 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				if e != nil {
 					log.Fatal(e)
 				}
+				runtime.GC()
 				fmt.Println(fileName, "Find Matching... buckets : ", len(buckets))
 				fmt.Println("")
-
 			}
 			if len(buckets[b+1]) == 0 {
 				fmt.Println("R buckets Continue at:", b+1, len(bucketsContinue))
@@ -1279,7 +1249,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 					}
 					// use sorted map
 					for _, key := range keys {
-						SelectedEntry := CurrentSlot.BucketL[key] // ถูกแล้ว
+						SelectedEntry := (*CurrentSlot.BucketL)[key] // ถูกแล้ว
 						OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
 					}
 					//88888888888888888888888888888888888888888888888888888888888888888888888888888
@@ -1327,7 +1297,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 			}
 		}
 
-		OutputPlotEntryR = CurrentSlot.Output //create new NextOut from CurrentSlot
+		OutputPlotEntryR = *CurrentSlot.Output //create new NextOut from CurrentSlot
 
 		for i, pos := range CurrentSlot.MatchPos { // ถูกแล้ว
 			OutputPlotEntryR[i].PosL = CurrentHashmap[pos[0]] // ถูกแล้ว //add new PosL to NextOut
@@ -1353,7 +1323,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 		}
 		// use sorted map
 		for _, key := range Nextkeys {
-			SelectedEntry := NexttSlot.BucketL[key] // ถูกแล้ว
+			SelectedEntry := (*NexttSlot.BucketL)[key] // ถูกแล้ว
 			OutputPlotEntryL = append(OutputPlotEntryL, SelectedEntry)
 		}
 		//88888888888888888888888888888888888888888888888888888888888888888888888888888
@@ -1416,7 +1386,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				binary.BigEndian.PutUint32(PosLByte, uint32(OutputPlotEntryR[i].PosL))
 				binary.BigEndian.PutUint32(PosRByte, uint32(OutputPlotEntryR[i].PosR))
 
-				dataWrite = append(dataWrite, y...)
+				dataWrite = append(dataWrite, y[:]...)
 				dataWrite = append(dataWrite, PosLByte...)
 				dataWrite = append(dataWrite, PosRByte...)
 
@@ -1432,7 +1402,7 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				var BucketIndex int
 				var dataWrite []byte
 
-				bucketid := BucketID(new(big.Int).SetBytes(OutputPlotEntryR[i].y).Uint64())
+				bucketid := BucketID(new(big.Int).SetBytes(OutputPlotEntryR[i].y[:]).Uint64())
 
 				y := OutputPlotEntryR[i].y
 				x := OutputPlotEntryR[i].x
@@ -1442,9 +1412,9 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 				binary.BigEndian.PutUint32(PosLByte, uint32(OutputPlotEntryR[i].PosL))
 				binary.BigEndian.PutUint32(PosRByte, uint32(OutputPlotEntryR[i].PosR))
 
-				dataWrite = append(dataWrite, y...)
+				dataWrite = append(dataWrite, y[:]...)
 				dataWrite = append(dataWrite, x...)
-				dataWrite = append(dataWrite, xlxr...)
+				dataWrite = append(dataWrite, xlxr[:]...)
 				dataWrite = append(dataWrite, PosLByte...)
 				dataWrite = append(dataWrite, PosRByte...)
 
@@ -1501,7 +1471,6 @@ func computTables(BucketCount uint64, k int, table_index uint8, NumBucketFitInMe
 
 	//fmt.Println(TempSlot)
 	wg.Wait()
-
 }
 func f1(ranges []Range, k int, start uint64, end uint64, waitingRoomEntries chan []F1Entry, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -1744,7 +1713,7 @@ func main() {
 				fmt.Println("f1 CPU:", i, "X:", f1Start, "-", f1End, "Total:", (f1End-f1Start)+1, "entries")
 				EntriesCount = EntriesCount + (f1End - f1Start) + 1
 			}
-			time.Sleep(200 * time.Millisecond)
+			//time.Sleep(200 * time.Millisecond)
 		}
 	}
 	if maxValue != EntriesCount {
@@ -1812,7 +1781,7 @@ func main() {
 	timeElapsed := time.Since(start)
 
 	fmt.Println("Computing table ", 1)
-	fmt.Printf("F1 plotEntries : %d maxValue(%d) time took %s\n", len(plot.t1), maxValue, timeElapsed)
+	fmt.Printf("F1 plotEntries : %d  time took %s\n", maxValue, timeElapsed)
 	fmt.Println("")
 
 	// Manually trigger garbage collector
@@ -1836,6 +1805,7 @@ func main() {
 		computTables(BucketCount, k, uint8(t), NumBucketFitInMemory, TmpFileCount)
 		ComTimeElapsed := time.Since(CompStart)
 		fmt.Printf("computTables time took %s \n", ComTimeElapsed)
+		runtime.GC()
 	}
 
 	timeElapsed = time.Since(start)
@@ -1868,8 +1838,8 @@ func main() {
 	fmt.Println("created hashmap_f7 :", len(hashmap_f7))
 
 	for {
-		challenge, _ := hex.DecodeString("e59031d7e1ea9166bf9de3b848dd907d95dbeccda36057dac3fcd3a87e3bbb3a")
-		//challenge, _ := RandomByteArray(32)
+		//challenge, _ := hex.DecodeString("e59031d7e1ea9166bf9de3b848dd907d95dbeccda36057dac3fcd3a87e3bbb3a")
+		challenge, _ := RandomByteArray(32)
 		challenge_f7 := bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k).ToUint64()
 		last_5_bits := bitarray.NewFromBytes(challenge, 0, 256).Slice(256-5, 256)
 		fmt.Println("challenge:", bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k), challenge_f7, bitarray.NewFromBytes(challenge, 0, 256), last_5_bits.ToUint64(), last_5_bits)
@@ -1905,7 +1875,7 @@ func main() {
 		fmt.Println("Plotordering Proof : ", plotorderingProof)
 		fmt.Println("QualityString Bits : ", QualityStringBits)
 
-		PlotToProoft := PlotToProof(plotorderingProof, uint8(k))
+		PlotToProoft := PlotToProof(plotorderingProof)
 		fmt.Println("Proofordering Proof : ", PlotToProoft)
 
 		fmt.Println("-------------------------------------------------------------------")
@@ -1924,38 +1894,4 @@ func RandomByteArray(size int) ([]byte, error) {
 	}
 
 	return byteArray, nil
-}
-func MFast(left T1Entry, right T1Entry) bool {
-
-	yL := new(big.Int).SetBytes(left.y[:]).Int64()
-	yR := new(big.Int).SetBytes(right.y[:]).Int64()
-
-	BucketIDL := yL / kBCInt64
-	BucketIDR := yR / kBCInt64
-
-	if BucketIDL+1 == BucketIDR {
-		yLBC := yL % kBCInt64
-		yRBC := yR % kBCInt64
-		yLBCDivC := yLBC / kCInt64
-		yRBCDivC := yRBC / kCInt64
-
-		yLBCModC := yLBC % kCInt64
-		yRBCModC := yRBC % kCInt64
-
-		BucketIDLMod2 := BucketIDL % 2
-
-		for m := int64(0); m < kExtraBitsPow; m++ {
-			cIDDiff := yRBCModC - yLBCModC - (2*m+BucketIDLMod2)*(2*m+BucketIDLMod2)
-			bIDDiff := yRBCDivC - yLBCDivC - m
-
-			if bIDDiff%kBInt64 == 0 && cIDDiff%kCInt64 == 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-func BitarrayTobyte(EntryBitarray *bitarray.BitArray) []byte {
-	res, _ := PedingBits(EntryBitarray).Bytes()
-	return res
 }

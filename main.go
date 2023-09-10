@@ -785,9 +785,9 @@ func GoMatchingAndCalculateFx(b uint32, matchingShiftsC [][]int, tableIndex uint
 		Bytesxlxr, _ := PedingBits(newxlxr).Bytes()
 
 		if tableIndex+1 == 7 {
-			f7, _ := PedingBits(f.Slice(0, k+int(kExtraBits))).Bytes()
+			f7, _ := PedingBits(f.Slice(0, k)).Bytes()
 			newEntry := ComputePlotEntry{
-				y:        [((k + kExtraBits) + 7) / 8]byte(f7),
+				y:        [((k) + 7) / 8]byte(f7),
 				PosL:     0,
 				PosR:     0,
 				isSwitch: isSwitch,
@@ -833,8 +833,8 @@ func GetInputs(PosL uint64, PosR uint64, tableIndex uint8) []*bitarray.BitArray 
 		PosL_ReadByte := PosL * uint64(XNumByte)
 		PosR_ReadByte := PosR * uint64(XNumByte)
 
-		bitsXL := NewBits(new(big.Int).SetBytes(data[PosL_ReadByte:PosL_ReadByte+uint64(XNumByte)]), k)
-		bitsXR := NewBits(new(big.Int).SetBytes(data[PosR_ReadByte:PosR_ReadByte+uint64(XNumByte)]), k)
+		bitsXL := PedingBitsWithlen(bitarray.NewBufferFromByteSlice(data[PosL_ReadByte:PosL_ReadByte+uint64(XNumByte)]).BitArray(), k)
+		bitsXR := PedingBitsWithlen(bitarray.NewBufferFromByteSlice(data[PosR_ReadByte:PosR_ReadByte+uint64(XNumByte)]).BitArray(), k)
 
 		result = append(result, bitsXL, bitsXR)
 	} else {
@@ -1015,15 +1015,15 @@ func PlotToProof(proof *bitarray.BitArray) *bitarray.BitArray {
 		x := proof.Slice(i*k, (i+1)*k).ToUint64()
 		result := f1N(x)
 		results = append(results, result)
-		xs = xs.Append(PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.x).BitArray(), int(k)))
-		//fmt.Println("xs:", PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.y).BitArray(), uint64(k+6)))
+		xs = xs.Append(PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.x).BitArray(), k))
+		//fmt.Println("xs:", x, PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.y[:]).BitArray(), k+6), PedingBitsWithlen(bitarray.NewBufferFromByteSlice(result.x).BitArray(), k))
 	}
 
 	// The plotter calculates f1.f7, and at each level, decides to swap or not swap. Here, we
 	// are doing a similar thing, we swap left and right, such that we end up with proof
 	// ordering.
-	for tableIndex := uint8(2); tableIndex < 7; tableIndex++ {
-
+	for tableIndex := uint8(2); tableIndex < 8; tableIndex++ {
+		//fmt.Println("table_index:", tableIndex)
 		var newXs *bitarray.BitArray
 		var newResults []ComputePlotEntry
 		// Computes the output pair (fx, new_metadata)
@@ -1041,13 +1041,15 @@ func PlotToProof(proof *bitarray.BitArray) *bitarray.BitArray {
 					results[i+1],
 					int(tableIndex-1),
 				)
-				//fmt.Println("<", FxOutput, COutput)
+				//	fmt.Println("<", bitarray.NewBufferFromByteSlice(results[i].y[:]), bitarray.NewBufferFromByteSlice(results[i].x[:]), bitarray.NewBufferFromByteSlice(results[i+1].x[:]))
 				Fx, _ = PedingBits(FxOutput).Bytes()
 				C, _ = PedingBits(COutput).Bytes()
 
 				start := uint64(k) * uint64(i) * (1 << (tableIndex - 2))
 				end := uint64(k) * uint64(i+2) * (1 << (tableIndex - 2))
 				newXs = newXs.Append(xs.Slice(int(start), int(end)))
+				//	fmt.Println(FxOutput, COutput)
+				//	fmt.Println(start, end)
 			} else {
 				// Here we switch the left and the right
 				FxOutput, COutput := calbucket(
@@ -1055,7 +1057,7 @@ func PlotToProof(proof *bitarray.BitArray) *bitarray.BitArray {
 					results[i],
 					int(tableIndex-1),
 				)
-				//fmt.Println(">", FxOutput, COutput)
+				//	fmt.Println(">", bitarray.NewBufferFromByteSlice(results[i+1].y[:]), bitarray.NewBufferFromByteSlice(results[i+1].x[:]), bitarray.NewBufferFromByteSlice(results[i].x[:]))
 				Fx, _ = PedingBits(FxOutput).Bytes()
 				C, _ = PedingBits(COutput).Bytes()
 				start := uint64(k) * uint64(i) * (1 << (tableIndex - 2))
@@ -1064,12 +1066,15 @@ func PlotToProof(proof *bitarray.BitArray) *bitarray.BitArray {
 
 				newXs = newXs.Append(xs.Slice(int(start2), int(end)))
 				newXs = newXs.Append(xs.Slice(int(start), int(start2)))
+				//	fmt.Println(FxOutput, COutput)
+				//	fmt.Println(start, start2, end)
 			}
 
 			newOutput = ComputePlotEntry{
 				y: [((k + kExtraBits) + 7) / 8]byte(Fx),
 				x: C,
 			}
+
 			newResults = append(newResults, newOutput)
 		}
 
@@ -1122,7 +1127,6 @@ func computTables(BucketCount uint64, table_index uint8, NumBucketFitInMemory, T
 		goroutineSem := make(chan struct{}, 1)
 		for b := uint32(0); b < uint32(BucketCount-1); b++ { //BucketCount-2 เพรา bucket เป็นคู่สุดท้าย เช่น มี4 bucket = 1-2,2-3,3-4
 			if NeedLoad == true || FirstLoad == true {
-				fmt.Println(b, BucketCount, LoopTmpFile, TmpFileCount)
 				startload := time.Now()
 				fileName := fmt.Sprintf("E://output/table_%d_Bucket_%d.tmp", table_index, LoopTmpFile)
 				buckets = make(map[uint32][]ComputePlotEntry)
@@ -1416,9 +1420,8 @@ func computTables(BucketCount uint64, table_index uint8, NumBucketFitInMemory, T
 			for i := 0; i < len(OutputPlotEntryR); i++ {
 
 				var dataWrite []byte
-				f7Byte := cdiv(k)
 
-				y := OutputPlotEntryR[i].y[len(OutputPlotEntryR[i].y)-f7Byte : len(OutputPlotEntryR[i].y)]
+				y := OutputPlotEntryR[i].y[:]
 
 				PosLByte := make([]byte, 4)
 				PosRByte := make([]byte, 4)
@@ -1832,8 +1835,8 @@ func main() {
 	fmt.Println("created hashmap_f7 :", len(hashmap_f7))
 
 	for {
-		challenge, _ := hex.DecodeString("78a57e1f0d303b9731085be3681c79a3e1bddff68c45e924dad70596241c8213")
-		//challenge, _ := RandomByteArray(32)
+		//challenge, _ := hex.DecodeString("ee2968df325f2ea470f4ad77e48ea83c5981b6be0ada9b435e1411204ca01c28")
+		challenge, _ := RandomByteArray(32)
 		challenge_f7 := bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k).ToUint64()
 		last_5_bits := bitarray.NewFromBytes(challenge, 0, 256).Slice(256-5, 256)
 		fmt.Println("challenge:", bitarray.NewFromBytes(challenge, 0, 256).Slice(0, k), challenge_f7, bitarray.NewFromBytes(challenge, 0, 256), last_5_bits.ToUint64(), last_5_bits)
@@ -1843,8 +1846,9 @@ func main() {
 			continue
 		}
 		EntiesPos := hashmap_f7[challenge_f7]
-		fmt.Println("challenge:", ByteToHexString(challenge), "found! in F7 (Table7)", challenge_f7)
+
 		for _, EntryPos := range EntiesPos {
+			fmt.Println("challenge:", ByteToHexString(challenge), "found! in F7 (Table7)", challenge_f7, "At Pos:", EntryPos)
 			EntryByte := data[(int(EntryPos) * F7entrySize) : (int(EntryPos)*F7entrySize)+F7entrySize]
 
 			PosL := new(big.Int).SetBytes(EntryByte[YByteLens : YByteLens+PosLByteLens]).Uint64()
@@ -1879,7 +1883,9 @@ func main() {
 		break
 	}
 }
+func GetQualitiesForChallenge() {
 
+}
 func RandomByteArray(size int) ([]byte, error) {
 	// Create a byte array of the given size
 	byteArray := make([]byte, size)
